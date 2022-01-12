@@ -6,9 +6,11 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <sys/types.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
-#include "cJSON.h"
+#include "cjson/cJSON.h"
 
 struct opts {
     uint8_t printJson : 1;
@@ -17,6 +19,38 @@ struct opts {
     const char *infile;
 };
 
+#define PROGRAM_NAME "wcecabinfo"
+#define PROGRAM_VERSION "0.1.1"
+
+void usage(int status) {
+    puts(
+        "\
+Usage: " PROGRAM_NAME
+        " [-j] [-n] [-f FIELDNAME] FILE\
+\n\
+Print information from a Windows CE PE header.\n\
+\n\
+  -j, --json               print output as JSON\n\
+  -f, --field FIELDNAME    only print the value of the field with key FIELDNAME\n\
+                           overrides --json option\n\
+  -h, --help               print help\n\
+  -v, --version            print version information\n\
+  -b, --basic              print only WCEApp, WCEArch and WCEVersion\n\
+\n\
+Examples:\n\
+  " PROGRAM_NAME
+        " f.exe     Print information about file f.exe.\n\
+  " PROGRAM_NAME
+        " -j f.exe  Print JSON formatted information about file f.exe.");
+
+    exit(status);
+}
+
+void version() {
+    puts("Version " PROGRAM_VERSION);
+    exit(0);
+}
+
 /**
  * @brief Get the commandline options
  *
@@ -24,9 +58,8 @@ struct opts {
  * @param argv
  * @return struct opts*
  */
-inline struct opts *get_opts(int argc, char **argv) {
-    struct opts options;
-
+static struct opts options;
+static inline struct opts *get_opts(int argc, char **argv) {
     opterr = 0;
 
     char c;
@@ -84,18 +117,24 @@ inline struct opts *get_opts(int argc, char **argv) {
     return &options;
 }
 
-inline int strendswith(const char *input, const char *tail) {
+/**
+ * @brief Check whether a string ends with the provided string
+ *
+ * @param input string to test
+ * @param tail string to check for
+ * @return int 1 if string ends with tail, 0 if not
+ */
+int strendswith(const char *input, const char *tail) {
     const size_t input_strlen = strlen(input);
     const size_t tail_strlen = strlen(tail);
     if (tail_strlen > input_strlen) {
         return 0;
     }
-
     return strcmp(input + input_strlen - tail_strlen, tail) == 0;
 }
 
-typedef struct {
-    void *file;
+typedef struct infile_struct {
+    const void *file;
     size_t size;
 } infile_struct;
 
@@ -105,8 +144,7 @@ typedef struct {
  * @param file_path
  * @return void*
  */
-uint8_t *read_000_file_contents(const char *file_path,
-                                      infile_struct *file_info) {
+int read000filecontents(const char *file_path, infile_struct *file_info) {
     struct stat s;
     int status;
     size_t size;
@@ -143,9 +181,34 @@ uint8_t *read_000_file_contents(const char *file_path,
     }
 }
 
+/**
+ * @brief Checks if a file is a CAB file
+ *
+ * @param file_path File path
+ * @return uint8_t 1 is the file is a cab file, 0 if not
+ */
+uint8_t iscabfile(const char *file_path) {
+    /* try to open file */
+    int fd = open(file_path, O_RDONLY);
+    if (fd < 0) {
+        fprintf(stderr, "open %s failed: %s", file_path, strerror(errno));
+        exit(EXIT_FAILURE);
+    }
+    uint8_t c = (fgetc(fd) == 'M');
+    fclose(fd);
+    return c;
+}
+
 #define CHUNK_SIZE 1024
 
-uint8_t *read_000_file_stream(FILE *stream, infile_struct *file_info) {
+/**
+ * @brief Read 000 file from an input stream
+ *
+ * @param stream stream to read from
+ * @param file_info struct to write file handle and size into
+ * @return uint8_t*
+ */
+uint8_t read_000_file_stream(FILE *stream, infile_struct *file_info) {
     void *buffer = malloc(CHUNK_SIZE);
 
     size_t c = 0;
@@ -179,7 +242,7 @@ int main(int argc, char **argv) {
     struct opts *options = get_opts(argc, argv);
     void *file;
     size_t file_size;
-    infile_struct *file_info;
+    infile_struct file_info;
 
     // check if cabextract is available
     if (system("which cabextract > /dev/null 2>&1")) {
@@ -189,21 +252,25 @@ int main(int argc, char **argv) {
         exit(EXIT_FAILURE);
     }
 
-    infile_struct *file_info = malloc(sizeof(infile_struct));
 
     if (isatty(STDIN_FILENO)) {
-        read_000_file_contents(options->infile, file_info);
+        if (iscabfile(options->infile)) {
+        } else {
+            read000filecontents(options->infile, &file_info);
+        }
     } else {
         char c = fgetc(stdin);
-        if (c == "M") {
+        if (c == 'M') {
             // CAB file
+            perror("Piping in CAB files is supported at this time");
+            exit(EXIT_FAILURE);
         } else if (c == 0x64) {
             // 000 File
-            file_info = read_000_file_stream(stdin, file_info);
+            read_000_file_stream(stdin, &file_info);
         }
     }
-    file = file_info->file;
-    file_size = file_info->size;
+    file = (void*) file_info.file;
+    file_size = (size_t) file_info.size;
 
     if (!file_size) {
         perror("Input size is 0");
