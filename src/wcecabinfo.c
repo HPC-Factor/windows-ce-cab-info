@@ -1,20 +1,24 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <getopt.h>
+#include <stdarg.h>
+#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
-#include <sys/types.h>
 #include <sys/stat.h>
+#include <sys/types.h>
 #include <unistd.h>
 
+#include "WinCECab000Header.h"
 #include "cjson/cJSON.h"
 
 struct opts {
-    uint8_t printJson : 1;
-    uint8_t onlyBasicInfo : 1;
+    bool printJson : 1;
+    bool onlyBasicInfo : 1;
+    bool verbose : 1;
     const char *filterField;
     const char *infile;
 };
@@ -28,7 +32,8 @@ void usage(int status) {
 Usage: " PROGRAM_NAME
         " [-j] [-n] [-f FIELDNAME] FILE\
 \n\
-Print information from a Windows CE PE header.\n\
+Print information about a CAB 000. Input can be either a cab file or an already extracted .000 file.\n\
+If a cab file is provided, cabextract is needed to handle extraction.\n\
 \n\
   -j, --json               print output as JSON\n\
   -f, --field FIELDNAME    only print the value of the field with key FIELDNAME\n\
@@ -36,12 +41,13 @@ Print information from a Windows CE PE header.\n\
   -h, --help               print help\n\
   -v, --version            print version information\n\
   -b, --basic              print only WCEApp, WCEArch and WCEVersion\n\
+  -V, --verbose            print verbose logs\n\
 \n\
 Examples:\n\
   " PROGRAM_NAME
-        " f.exe     Print information about file f.exe.\n\
+        " f.cab     Print information about file f.cab.\n\
   " PROGRAM_NAME
-        " -j f.exe  Print JSON formatted information about file f.exe.");
+        " -j f.000  Print JSON formatted information about file f.000.");
 
     exit(status);
 }
@@ -68,20 +74,21 @@ static inline struct opts *get_opts(int argc, char **argv) {
         {"json", no_argument, 0, 'j'},
         {"help", no_argument, NULL, 'h'},
         {"version", no_argument, NULL, 'v'},
+        {"verbose", no_argument, NULL, 'V'},
         {"basic", no_argument, NULL, 'b'},
         {"field", required_argument, NULL, 'f'},
         {NULL, 0, NULL, 0}};
     /** getopt_long stores the option index here. */
     int option_index = 0;
 
-    while ((c = getopt_long(argc, argv, "jbhvf:", long_options,
+    while ((c = getopt_long(argc, argv, "jbhvVf:", long_options,
                             &option_index)) != -1) {
         switch (c) {
             case 'j':
-                options.printJson = 1;
+                options.printJson = true;
                 break;
             case 'b':
-                options.onlyBasicInfo = 1;
+                options.onlyBasicInfo = true;
                 break;
             case 'h':
                 usage(0);
@@ -91,6 +98,9 @@ static inline struct opts *get_opts(int argc, char **argv) {
                 break;
             case 'v':
                 version();
+                break;
+            case 'V':
+                options.verbose = true;
                 break;
             default:
                 abort();
@@ -158,45 +168,45 @@ int read000filecontents(const char *file_path, infile_struct *file_info) {
         exit(EXIT_FAILURE);
     }
 
-    if (strendswith(file_path, ".000")) {
-        /* Get the size of the file. */
-        status = fstat(fd, &s);
-        if (status < 0) {
-            fprintf(stderr, "stat %s failed: %s", file_path, strerror(errno));
-            exit(EXIT_FAILURE);
-        }
-
-        file_info->size = s.st_size;
-
-        /* Memory-map the file. */
-        mapped = mmap(0, size, PROT_READ, MAP_PRIVATE, fd, 0);
-        if (mapped == MAP_FAILED) {
-            fprintf(stderr, "mmap %s failed: %s", file_path, strerror(errno));
-        }
-
-        file_info->file = mapped;
-        return 1;
-    } else {
-        // TODO
+    /* Get the size of the file. */
+    status = fstat(fd, &s);
+    if (status < 0) {
+        fprintf(stderr, "stat %s failed: %s", file_path, strerror(errno));
+        exit(EXIT_FAILURE);
     }
+
+    file_info->size = s.st_size;
+
+    /* Memory-map the file. */
+    mapped = mmap(0, size, PROT_READ, MAP_PRIVATE, fd, 0);
+    if (mapped == MAP_FAILED) {
+        fprintf(stderr, "mmap %s failed: %s", file_path, strerror(errno));
+    }
+
+    file_info->file = mapped;
+    return 1;
 }
 
 /**
- * @brief Checks if a file is a CAB file
+ * @brief Checks if a file has a 32 bit header
  *
  * @param file_path File path
  * @return uint8_t 1 is the file is a cab file, 0 if not
  */
-uint8_t iscabfile(const char *file_path) {
+uint8_t filehasheader(const char *file_path, const uint32_t header_signature) {
+    // fprintf(stdout, "Opening file '%s'.\n", file_path);
     /* try to open file */
-    int fd = open(file_path, O_RDONLY);
-    if (fd < 0) {
-        fprintf(stderr, "open %s failed: %s", file_path, strerror(errno));
+    FILE *fp = fopen(file_path, "rb");
+
+    if (!fp) {
+        fprintf(stderr, "error: file open failed '%s'.\n", file_path);
         exit(EXIT_FAILURE);
     }
-    uint8_t c = (fgetc(fd) == 'M');
-    fclose(fd);
-    return c;
+
+    uint32_t c;
+    fread(&c, sizeof(c), 1, fp);
+    fclose(fp);
+    return c == header_signature;
 }
 
 #define CHUNK_SIZE 1024
@@ -237,26 +247,67 @@ uint8_t read_000_file_stream(FILE *stream, infile_struct *file_info) {
     return 1;
 }
 
+static bool verbose_enabled = false;
+
+static int verbose(const char *restrict format, ...) {
+    if (!verbose_enabled) return 0;
+
+    va_list args;
+    va_start(args, format);
+    int ret = vprintf(format, args);
+    va_end(args);
+
+    return ret;
+}
+
 int main(int argc, char **argv) {
     /** commandline options */
     struct opts *options = get_opts(argc, argv);
     void *file;
     size_t file_size;
     infile_struct file_info;
+    verbose_enabled = options->verbose;
 
-    // check if cabextract is available
-    if (system("which cabextract > /dev/null 2>&1")) {
-        fprintf(stderr,
-                "cabextract not found. Please install this dependency. "
-                "https://www.cabextract.org.uk/");
-        exit(EXIT_FAILURE);
-    }
-
+    const char *ext = strrchr(options->infile, '.');
 
     if (isatty(STDIN_FILENO)) {
-        if (iscabfile(options->infile)) {
-        } else {
+        if (filehasheader(options->infile, CE_CAB_HEADER_SIGNATURE)) {
+            verbose("File was identified as a CAB file by file signature\n");
+            // Check file extension
+            if (!strcasecmp(ext, "CAB")) {
+                fprintf(
+                    stderr,
+                    "Warning: File appears to be a CAB file, but does not have "
+                    "a .cab extension");
+            }
+            // check if cabextract is available
+            if (system("which cabextract > /dev/null 2>&1")) {
+                fprintf(stderr,
+                        "cabextract not found. Please install this dependency. "
+                        "https://www.cabextract.org.uk/");
+                exit(EXIT_FAILURE);
+            }
+            // Use cabextract to extract the 000 file and read the pipe
+
+            exit(EXIT_SUCCESS);
+        } else if (filehasheader(options->infile,
+                                 CE_CAB_000_HEADER_SIGNATURE)) {
+            verbose("File was identified as a 000 file by file signature\n");
+
+            // Check file extension
+            if (!strcasecmp(ext, "000")) {
+                fprintf(
+                    stderr,
+                    "Warning: File appears to be a 000 file, but does not have "
+                    "a .000 extension");
+            }
+
+            exit(EXIT_SUCCESS);
             read000filecontents(options->infile, &file_info);
+        } else {
+            fprintf(stderr,
+                    "Error: Input file is neither a CAB file nor a 000 file\n");
+            exit(EXIT_FAILURE);
         }
     } else {
         char c = fgetc(stdin);
@@ -269,8 +320,8 @@ int main(int argc, char **argv) {
             read_000_file_stream(stdin, &file_info);
         }
     }
-    file = (void*) file_info.file;
-    file_size = (size_t) file_info.size;
+    file = (void *)file_info.file;
+    file_size = (size_t)file_info.size;
 
     if (!file_size) {
         perror("Input size is 0");

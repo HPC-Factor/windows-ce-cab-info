@@ -1,11 +1,14 @@
 #include <stdint.h>
+
 #include "WinCEArchitecture.h"
 
 #define CE_CAB_000_HEADER_SIGNATURE 0x4543534D
 
-typedef struct _CE_CAB_000_HEADER
-{
-    /** An ASCII signature, "MSCE". This is 0x4543534D as a little-endian integer */
+#define CE_CAB_HEADER_SIGNATURE 0x4643534D
+
+typedef struct _CE_CAB_000_HEADER {
+    /** An ASCII signature, "MSCE". This is 0x4543534D as a little-endian
+     * integer */
     uint32_t AsciiSignature;
     /** Unknown purpose, usually 0 */
     uint32_t Unknown1;
@@ -17,17 +20,23 @@ typedef struct _CE_CAB_000_HEADER
     uint32_t Unknown3;
     /** Target architecture for this cabinet: see Appendix A */
     uint32_t TargetArchitecture;
-    /** Minimal version of WinCE (major version number) required to install this cabinet, or 0 to indicate no restriction */
+    /** Minimal version of WinCE (major version number) required to install this
+     * cabinet, or 0 to indicate no restriction */
     uint32_t MinCEVersionMajor;
-    /** Minimal version of WinCE (minor version number) required to install this cabinet, or 0 to indicate no restriction */
+    /** Minimal version of WinCE (minor version number) required to install this
+     * cabinet, or 0 to indicate no restriction */
     uint32_t MinCEVersionMinor;
-    /** Maximal version of WinCE (major version number) required to install this cabinet, or 0 to indicate no restriction */
+    /** Maximal version of WinCE (major version number) required to install this
+     * cabinet, or 0 to indicate no restriction */
     uint32_t MaxCEVersionMajor;
-    /** Maximal version of WinCE (minor version number) required to install this cabinet, or 0 to indicate no restriction */
+    /** Maximal version of WinCE (minor version number) required to install this
+     * cabinet, or 0 to indicate no restriction */
     uint32_t MaxCEVersionMinor;
-    /** Minmal version of WinCE (build number) required to install this cabinet, or 0 to indicate no restriction */
+    /** Minmal version of WinCE (build number) required to install this cabinet,
+     * or 0 to indicate no restriction */
     uint32_t MinCEBuildNumber;
-    /** Maximal version of WinCE (build number) required to install this cabinet, or 0 to indicate no restriction */
+    /** Maximal version of WinCE (build number) required to install this
+     * cabinet, or 0 to indicate no restriction */
     uint32_t MaxCEBuildNumber;
     /** The number of entries in the STRINGS section */
     uint16_t NumEntriesString;
@@ -55,15 +64,18 @@ typedef struct _CE_CAB_000_HEADER
     uint32_t OffsetLinks;
     /** The file offset of the APPNAME string in bytes */
     uint16_t OffsetAppname;
-    /** The length of the APPNAME string in bytes, including null terminating byte */
+    /** The length of the APPNAME string in bytes, including null terminating
+     * byte */
     uint16_t LengthAppname;
     /** The file offset of the PROVIDER string in bytes */
     uint16_t OffsetProvider;
-    /** The length of the PROVIDER string in bytes, including null terminating byte */
+    /** The length of the PROVIDER string in bytes, including null terminating
+     * byte */
     uint16_t LengthProvider;
     /** The file offset of the UNSUPPORTED multi string in bytes */
     uint16_t OffsetUnsupported;
-    /** The length of the UNSUPPORTED multi string in bytes, including null terminating byte */
+    /** The length of the UNSUPPORTED multi string in bytes, including null
+     * terminating byte */
     uint16_t LengthUnsupported;
     /** Unknown purpose, usually 0 */
     uint16_t Unknown4;
