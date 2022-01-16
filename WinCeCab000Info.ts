@@ -1,6 +1,9 @@
+import { WinCEArchitecture } from "./WinCEArchitecture";
+
 export type WinCeCab000Header = {
     appName: string;
     provider: string;
+    architecture: WinCEArchitecture | null;
     unsupported?: string[];
 
     minCeVersion?: {
@@ -17,6 +20,7 @@ export type WinCeCab000Header = {
     maxCeBuildNumber?: number;
 
     files: {
+        fileName: string;
         fileId: number;
         directory: string;
         /** If bit is set, this file is a reference-counting shared file. It is not deleted at uninstall time unless its reference count is 0 */
@@ -40,6 +44,8 @@ export type WinCeCab000Header = {
     registryEntries: {
         /** Registry hive */
         hive: string;
+        /** Registry hive id */
+        hiveId: number;
         /** Registry keys */
         keys: {
             /** Registry key */
@@ -51,6 +57,14 @@ export type WinCeCab000Header = {
                 value: string[];
             })[];
         };
+    }[];
+
+    links: {
+        linkId: number;
+        isFile: boolean;
+        targetId: number;
+        linkPath: string;
+        //targetPath: string;
     }[];
 
 };
