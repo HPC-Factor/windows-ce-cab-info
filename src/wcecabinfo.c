@@ -7,25 +7,37 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/mman.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
+#ifndef __MINGW32__
+#include <sys/mman.h>
+#endif
 
 #include "WinCEArchitecture.h"
 #include "WinCECab000Header.h"
 #include "cjson/cJSON.h"
 
+#define PROGRAM_NAME "wcecabinfo"
+#define PROGRAM_VERSION "0.2.0"
+
 struct opts {
+    /** Print output as JSON */
     bool printJson : 1;
-    bool onlyBasicInfo : 1;
+    /** Print output as Windows REG format */
+    bool printReg : 1;
+    /** Print verbose information */
     bool verbose : 1;
+    /** Filter field */
     const char *filterField;
+    /** Input file path */
     const char *infile;
 };
 
-#define PROGRAM_NAME "wcecabinfo"
-#define PROGRAM_VERSION "0.1.1"
+typedef struct infile_struct {
+    const void *file;
+    size_t size;
+} infile_struct;
 
 /** Pointer to the (possibily memory-mapped) file contents */
 static void *file;
@@ -39,26 +51,24 @@ static const CE_CAB_000_HEADER *cabheader;
  */
 void usage(int status) {
     puts(
-        "\
-Usage: " PROGRAM_NAME
-        " [-j] [-n] [-f FIELDNAME] FILE\
-\n\
-Print information about a CAB 000. Input can be either a cab file or an already extracted .000 file.\n\
-If a cab file is provided, cabextract is needed to handle extraction.\n\
-\n\
-  -j, --json               print output as JSON\n\
-  -f, --field FIELDNAME    only print the value of the field with key FIELDNAME\n\
-                           overrides --json option\n\
-  -h, --help               print help\n\
-  -v, --version            print version information\n\
-  -b, --basic              print only WCEApp, WCEArch and WCEVersion\n\
-  -V, --verbose            print verbose logs\n\
-\n\
-Examples:\n\
-  " PROGRAM_NAME
-        " f.cab     Print information about file f.cab.\n\
-  " PROGRAM_NAME " -j f.000  Print JSON formatted information about file f.000.");
-
+        "Usage: " PROGRAM_NAME
+        " [-j] [-n] [-f FIELDNAME] FILE"
+        "\n"
+        "Print information about a CAB .000 file. Input can be either a cab file or an already extracted .000 file.\n"
+        "If a cab file is provided, cabextract is needed to handle extraction.\n"
+        "\n"
+        "  -j, --json               print output as JSON\n"
+        "  -r, --reg                print output as Windows Reg format\n"
+        //"  -f, --field FIELDNAME    only print the value of the field with key FIELDNAME\n"
+        "                           overrides --json option\n"
+        "  -h, --help               print help\n"
+        "  -v, --version            print version information\n"
+        "  -V, --verbose            print verbose logs\n"
+        "\n"
+        "Examples:\n"
+        "  " PROGRAM_NAME
+        " f.cab     Print information about file f.cab.\n"
+        "  " PROGRAM_NAME " -j f.000  Print JSON formatted information about file f.000.");
     exit(status);
 }
 
@@ -66,8 +76,9 @@ Examples:\n\
  * @brief Print version
  */
 void version() {
+    puts(PROGRAM_NAME);
     puts("Version " PROGRAM_VERSION);
-    exit(0);
+    exit(EXIT_SUCCESS);
 }
 
 /**
@@ -84,22 +95,22 @@ static inline struct opts *get_opts(int argc, char **argv) {
     char c;
 
     static struct option long_options[] = {{"json", no_argument, 0, 'j'},
+                                           {"reg", no_argument, 0, 'r'},
                                            {"help", no_argument, NULL, 'h'},
                                            {"version", no_argument, NULL, 'v'},
                                            {"verbose", no_argument, NULL, 'V'},
-                                           {"basic", no_argument, NULL, 'b'},
                                            {"field", required_argument, NULL, 'f'},
                                            {NULL, 0, NULL, 0}};
     /** getopt_long stores the option index here. */
     int option_index = 0;
 
-    while ((c = getopt_long(argc, argv, "jbhvVf:", long_options, &option_index)) != -1) {
+    while ((c = getopt_long(argc, argv, "jrbhvVf:", long_options, &option_index)) != -1) {
         switch (c) {
             case 'j':
                 options.printJson = true;
                 break;
-            case 'b':
-                options.onlyBasicInfo = true;
+            case 'r':
+                options.printReg = true;
                 break;
             case 'h':
                 usage(0);
@@ -118,13 +129,14 @@ static inline struct opts *get_opts(int argc, char **argv) {
         }
     }
 
-    /* field option overrides json option */
-    if (options.filterField || options.onlyBasicInfo) {
-        options.printJson = 0;
+    if (options.printJson && options.printReg) {
+        fprintf(stderr, "Error: --json and --reg are mutually exclusive\n");
+        exit(EXIT_FAILURE);
     }
 
+    /* field option overrides json option */
     if (options.filterField) {
-        options.onlyBasicInfo = 0;
+        options.printJson = 0;
     }
 
     options.infile = "-";
@@ -159,11 +171,7 @@ int strendswith(const char *input, const char *tail) {
     return strcmp(input + input_strlen - tail_strlen, tail) == 0;
 }
 
-typedef struct infile_struct {
-    const void *file;
-    size_t size;
-} infile_struct;
-
+#ifndef __MINGW32__
 /**
  * @brief Get the contents of the 000 file and return the pointer to it
  *
@@ -203,6 +211,7 @@ int read000filecontents(const char *file_path, infile_struct *file_info) {
     file_info->file = mapped;
     return 1;
 }
+#endif
 
 /**
  * @brief Checks if a file has a 32 bit header
@@ -241,11 +250,13 @@ uint8_t read000filestream(FILE *stream, infile_struct *file_info) {
     size_t c = 0;
     size_t file_size = 0;
 
+    uint16_t chunks = 1;
+
     while (c = fread(buffer + file_size, 1, CHUNK_SIZE, stream)) {
         char *old = buffer;
 
         file_size += c;
-        buffer = realloc(buffer, CHUNK_SIZE);
+        buffer = realloc(buffer, CHUNK_SIZE * (++chunks));
         if (buffer == NULL) {
             perror("Failed to reallocate content");
             free(old);
@@ -293,7 +304,7 @@ const char **get_unsupported(const char *usup, uint16_t len) {
         }
     }
 
-    const char **unsupported = malloc(numUnsupported);
+    const char **unsupported = malloc((numUnsupported + 1) * sizeof(size_t));
 
     uint16_t idx = 0;
     char prevValue = '\0';
@@ -384,9 +395,9 @@ const char *get_basedir(uint16_t basedirid) {
 const char *get_dir(uint16_t directoryid) {
     CE_CAB_000_DIRECTORY_ENTRY *direntry = (CE_CAB_000_DIRECTORY_ENTRY *)(file + cabheader->OffsetDirs);
     for (int i = 0; i < cabheader->NumEntriesDirs; i++) {
-        printf("\n    ID: %d\n", direntry->Id);
-        printf("   Len: %d\n", direntry->SpecLength);
-        printf("String: %s\n", parse_spec(&(direntry->Spec), "\\"));
+        //printf("\n    ID: %d\n", direntry->Id);
+        //printf("   Len: %d\n", direntry->SpecLength);
+        //printf("String: %s\n", parse_spec(&(direntry->Spec), "\\"));
         if (direntry->Id == directoryid) {
             return parse_spec(&(direntry->Spec), "\\");
         }
@@ -414,48 +425,63 @@ const char *get_file(uint16_t fileid) {
 
 const char *get_architecture(uint32_t archid) {
     switch (archid) {
-        case 103:
+        case CE_CAB_000_ARCH_SH3:
             return CE_ARCH_SH3;  // SHx SH3
-        case 104:
+        case CE_CAB_000_ARCH_SH4:
             return CE_ARCH_SH4;  // SHx SH4
-        case 386:
-            return "I386";  // Intel 386
-        case 486:
-            return "I486";  // Intel 486
-        case 586:
-            return "I586";  // Intel Pentium
-        case 601:
+        case CE_CAB_000_ARCH_I386:
+            return CE_ARCH_X86;  // Intel 386
+        case CE_CAB_000_ARCH_I486:
+            return CE_ARCH_X86;  // Intel 486
+        case CE_CAB_000_ARCH_I586:
+            return CE_ARCH_X86;  // Intel Pentium
+        case CE_CAB_000_ARCH_PPC601:
             return "PPC601";  // PowerPC 601
-        case 603:
+        case CE_CAB_000_ARCH_PPC603:
             return "PPC602";  // PowerPC 603
-        case 604:
+        case CE_CAB_000_ARCH_PPC604:
             return "PPC604";  // PowerPC 604
-        case 620:
+        case CE_CAB_000_ARCH_PPC620:
             return "PPC620";  // PowerPC 620
-        case 821:
+        case CE_CAB_000_ARCH_MOTOROLA_821:
             return "MOTOROLA821";  // Motorola 821
-        case 1824:
+        case CE_CAB_000_ARCH_ARM720:
             return CE_ARCH_ARM;  // ARM 720
-        case 2080:
+        case CE_CAB_000_ARCH_ARM820:
             return CE_ARCH_ARM;  // ARM 820
-        case 2336:
+        case CE_CAB_000_ARCH_ARM920:
             return CE_ARCH_ARM;  // ARM 920
-        case 2577:
+        case CE_CAB_000_ARCH_STRONGARM:
             return CE_ARCH_ARM;  // StrongARM
-        case 4000:
+        case CE_CAB_000_ARCH_R4000:
             return CE_ARCH_MIPS;  // MIPS R4000
-        case 10003:
+        case CE_CAB_000_ARCH_HITACHI_SH3:
             return CE_ARCH_SH3;  // Hitachi SH3
-        case 10004:
+        case CE_CAB_000_ARCH_HITACHI_SH3E:
             return CE_ARCH_SH3;  // Hitachi SH3E
-        case 10005:
+        case CE_CAB_000_ARCH_HITACHI_SH4:
             return CE_ARCH_SH4;  // Hitachi SH4
-        case 21064:
+        case CE_CAB_000_ARCH_ALPHA:
             return "ALPHA";  // Alpha 21064
-        case 70001:
+        case CE_CAB_000_ARCH_ARM7TDMI:
             return CE_ARCH_THUMB;  // ARM 7TDMI
         default:
             return NULL;
+    }
+}
+
+const char *get_reg_datatype(uint32_t flags) {
+    //printf("FLAGS: 0x%08x", flags);
+    uint32_t masked = flags & 0x00010001;
+    switch (masked) {
+        case TYPE_REG_DWORD:
+            return "REG_DWORD";
+        case TYPE_REG_SZ:
+            return "REG_SZ";
+        case TYPE_REG_MULTI_SZ:
+            return "REG_MULTI_SZ";
+        case TYPE_REG_BINARY:
+            return "REG_BINARY";
     }
 }
 
@@ -466,6 +492,16 @@ const char *concat_paths(const char *path1, const char *path2) {
     return out;
 }
 
+const char *get_path(uint16_t hiveid) {
+    CE_CAB_000_REGHIVE_ENTRY *reghiveentry = (CE_CAB_000_REGHIVE_ENTRY *)(file + cabheader->OffsetRegHives);
+    for (int i = 0; i < cabheader->NumEntriesRegHives; i++) {
+        uint16_t id = reghiveentry->Id;
+        if (id == hiveid) return concat_paths(get_hive(reghiveentry->HiveRoot), parse_spec(&(reghiveentry->Spec), "\\"));
+        reghiveentry = ((void *)reghiveentry) + reghiveentry->SpecLength + sizeof(CE_CAB_000_REGHIVE_ENTRY) - sizeof(uint16_t);
+    }
+    return NULL;
+}
+
 int main(int argc, char **argv) {
     /** commandline options */
     struct opts *options = get_opts(argc, argv);
@@ -473,9 +509,8 @@ int main(int argc, char **argv) {
     infile_struct file_info;
     verbose_enabled = options->verbose;
 
-    const char *ext = strrchr(options->infile, '.');
-
     if (isatty(STDIN_FILENO)) {
+        const char *ext = strrchr(options->infile, '.');
         if (access(options->infile, R_OK) == -1) {
             fprintf(stderr, "Error: File can not be read or does not exist.");
             exit(EXIT_FAILURE);
@@ -486,26 +521,28 @@ int main(int argc, char **argv) {
             verbose("File was identified as a CAB file by file signature\n");
             // Check file extension
             if (!strcasecmp(ext, "CAB")) {
-                fprintf(stderr,
-                        "Warning: File appears to be a CAB file, but does not have "
-                        "a .cab extension");
+                fprintf(stderr, "Warning: File appears to be a CAB file, but does not have a .cab extension");
             }
             // check if cabextract is available
             if (system("which cabextract > /dev/null 2>&1")) {
-                fprintf(stderr,
-                        "cabextract not found. Please install this dependency. "
-                        "https://www.cabextract.org.uk/");
+                fprintf(stderr, "cabextract not found. Please install this dependency.\nhttps://www.cabextract.org.uk/\n");
                 exit(EXIT_FAILURE);
             }
             // Use cabextract to extract the 000 file and read the pipe
-            char *cabextractcmd;
+            char *cabextractcmd = malloc(256 + strlen(options->infile));
             sprintf(cabextractcmd, "cabextract --pipe --filter *.000 %s", options->infile);
-            FILE *pcabextract = popen("cabextract", "r");
+            FILE *pcabextract = popen(cabextractcmd, "r");
+
+            // Read cabextract output
             read000filestream(pcabextract, &file_info);
 
+            // Check if cabextract succeeded
             int status = pclose(pcabextract);
-
-            exit(EXIT_SUCCESS);
+            verbose("cabextract existed with status %d\n", status);
+            if (status) {
+                fprintf(stderr, "Error: cabextract existed with status %d\n", status);
+                exit(EXIT_FAILURE);
+            }
         } else if (filehasheader(options->infile, CE_CAB_000_HEADER_SIGNATURE)) {
             verbose("File was identified as a 000 file by file signature\n");
 
@@ -516,8 +553,12 @@ int main(int argc, char **argv) {
                         "a .000 extension");
             }
 
-            // Read file contents of the 000 file
+// Read file contents of the 000 file
+#ifndef __MINGW32__
             read000filecontents(options->infile, &file_info);
+#else
+            read000filestream(fopen(options->infile, "r"), &file_info);
+#endif
         } else {
             fprintf(stderr, "Error: Input file is neither a CAB file nor a 000 file\n");
             exit(EXIT_FAILURE);
@@ -530,8 +571,11 @@ int main(int argc, char **argv) {
         // fprintf(stderr,("Piping in CAB files is supported at this time\n");
         // exit(EXIT_FAILURE);
 
+        // TODO make difference between cab file and 000 file
+
         read000filestream(stdin, &file_info);
     }
+
     file = (void *)file_info.file;
     file_size = (size_t)file_info.size;
 
@@ -544,43 +588,38 @@ int main(int argc, char **argv) {
 
     cabheader = (CE_CAB_000_HEADER *)file;
 
-    // printf("AsciiSignature: %#08X\n", cabheader->AsciiSignature);
-    // printf("Unknown1: %d\n", cabheader->Unknown1);
-    // printf("FileLength: %d\n", cabheader->FileLength);
-    // printf("Unknown2: %d\n", cabheader->Unknown2);
-    // printf("Unknown3: %d\n", cabheader->Unknown3);
-    printf("TargetArchitecture: %d\n", cabheader->TargetArchitecture);
-    // printf("MinCEVersionMajor: %d\n", cabheader->MinCEVersionMajor);
-    // printf("MinCEVersionMinor: %d\n", cabheader->MinCEVersionMinor);
-    // printf("MaxCEVersionMajor: %d\n", cabheader->MaxCEVersionMajor);
-    // printf("MaxCEVersionMinor: %d\n", cabheader->MaxCEVersionMinor);
-    // printf("MinCEBuildNumber: %d\n", cabheader->MinCEBuildNumber);
-    // printf("MaxCEBuildNumber: %d\n", cabheader->MaxCEBuildNumber);
-    // printf("NumEntriesString: %d\n", cabheader->NumEntriesString);
-    // printf("NumEntriesDirs: %d\n", cabheader->NumEntriesDirs);
-    // printf("NumEntriesFiles: %d\n", cabheader->NumEntriesFiles);
-    // printf("NumEntriesRegHives: %d\n", cabheader->NumEntriesRegHives);
-    // printf("NumEntriesRegKeys: %d\n", cabheader->NumEntriesRegKeys);
-    printf("NumEntriesLinks: %d\n", cabheader->NumEntriesLinks);
-    // printf("OffsetStrings: %d\n", cabheader->OffsetStrings);
-    // printf("OffsetDirs: %d\n", cabheader->OffsetDirs);
-    // printf("OffsetFiles: %d\n", cabheader->OffsetFiles);
-    // printf("OffsetRegHives: %d\n", cabheader->OffsetRegHives);
-    // printf("OffsetRegKeys: %d\n", cabheader->OffsetRegKeys);
-    // printf("OffsetLinks: %d\n", cabheader->OffsetLinks);
-    // printf("OffsetAppname: %d\n", cabheader->OffsetAppname);
-    // printf("LengthAppname: %d\n", cabheader->LengthAppname);
-    // printf("OffsetProvider: %d\n", cabheader->OffsetProvider);
-    // printf("LengthProvider: %d\n", cabheader->LengthProvider);
-    // printf("OffsetUnsupported: %d\n", cabheader->OffsetUnsupported);
-    // printf("LengthUnsupported: %d\n", cabheader->LengthUnsupported);
-    // printf("Unknown4: %d\n", cabheader->Unknown4);
-    // printf("Unknown5: %d\n", cabheader->Unknown5);
-
-    puts("Dirs");
-    //get_dir(100);
-    puts("Files");
-    //get_file(1000);
+    verbose("AsciiSignature: %#08X\n", cabheader->AsciiSignature);
+    verbose("Unknown1: %d\n", cabheader->Unknown1);
+    verbose("FileLength: %d\n", cabheader->FileLength);
+    verbose("Unknown2: %d\n", cabheader->Unknown2);
+    verbose("Unknown3: %d\n", cabheader->Unknown3);
+    verbose("TargetArchitecture: %d\n", cabheader->TargetArchitecture);
+    verbose("MinCEVersionMajor: %d\n", cabheader->MinCEVersionMajor);
+    verbose("MinCEVersionMinor: %d\n", cabheader->MinCEVersionMinor);
+    verbose("MaxCEVersionMajor: %d\n", cabheader->MaxCEVersionMajor);
+    verbose("MaxCEVersionMinor: %d\n", cabheader->MaxCEVersionMinor);
+    verbose("MinCEBuildNumber: %d\n", cabheader->MinCEBuildNumber);
+    verbose("MaxCEBuildNumber: %d\n", cabheader->MaxCEBuildNumber);
+    verbose("NumEntriesString: %d\n", cabheader->NumEntriesString);
+    verbose("NumEntriesDirs: %d\n", cabheader->NumEntriesDirs);
+    verbose("NumEntriesFiles: %d\n", cabheader->NumEntriesFiles);
+    verbose("NumEntriesRegHives: %d\n", cabheader->NumEntriesRegHives);
+    verbose("NumEntriesRegKeys: %d\n", cabheader->NumEntriesRegKeys);
+    verbose("NumEntriesLinks: %d\n", cabheader->NumEntriesLinks);
+    verbose("OffsetStrings: %d\n", cabheader->OffsetStrings);
+    verbose("OffsetDirs: %d\n", cabheader->OffsetDirs);
+    verbose("OffsetFiles: %d\n", cabheader->OffsetFiles);
+    verbose("OffsetRegHives: %d\n", cabheader->OffsetRegHives);
+    verbose("OffsetRegKeys: %d\n", cabheader->OffsetRegKeys);
+    verbose("OffsetLinks: %d\n", cabheader->OffsetLinks);
+    verbose("OffsetAppname: %d\n", cabheader->OffsetAppname);
+    verbose("LengthAppname: %d\n", cabheader->LengthAppname);
+    verbose("OffsetProvider: %d\n", cabheader->OffsetProvider);
+    verbose("LengthProvider: %d\n", cabheader->LengthProvider);
+    verbose("OffsetUnsupported: %d\n", cabheader->OffsetUnsupported);
+    verbose("LengthUnsupported: %d\n", cabheader->LengthUnsupported);
+    verbose("Unknown4: %d\n", cabheader->Unknown4);
+    verbose("Unknown5: %d\n", cabheader->Unknown5);
 
     const char *appName = (const char *)(file + cabheader->OffsetAppname);
     const char *provider = (const char *)(file + cabheader->OffsetProvider);
@@ -591,7 +630,7 @@ int main(int argc, char **argv) {
     const char **unsupported = get_unsupported(usup, usuplen);
 
     if (options->printJson) {
-        // Print output JSON formatted
+        verbose("JSON");
         char *buffer = malloc(256);
 
         /** Root JSON Object */
@@ -614,7 +653,13 @@ int main(int argc, char **argv) {
         }
 
         /** Unsupported */
-        // TODO
+        if (*unsupported) {
+            cJSON *unsupportedJson = cJSON_CreateArray();
+            for (int i = 0; unsupported[i] && strlen(unsupported[i]); i++) {
+                cJSON_AddItemToArray(unsupportedJson, cJSON_CreateString(unsupported[i]));
+            }
+            cJSON_AddItemToObject(cabJson, "unsupported", unsupportedJson);
+        }
 
         /** Min CE Version */
         if (cabheader->MinCEVersionMajor) {
@@ -643,14 +688,16 @@ int main(int argc, char **argv) {
             sprintf(buffer, "%d.%d", cabheader->MaxCEVersionMajor, cabheader->MaxCEVersionMinor);
             cJSON *maxCeVersionStringJson = cJSON_CreateString(buffer);
             cJSON_AddItemToObject(maxCeVersionJson, "maxCeVersionString", maxCeVersionStringJson);
-            cJSON_AddItemToObject(cabJson, "minCeVersion", maxCeVersionJson);
+            cJSON_AddItemToObject(cabJson, "maxCeVersion", maxCeVersionJson);
         }
 
+        /** Min CE build number */
         if (cabheader->MinCEBuildNumber) {
             cJSON *minCeBuildNumberJson = cJSON_CreateNumber(cabheader->MinCEBuildNumber);
             cJSON_AddItemToObject(cabJson, "minCeBuildNumber", minCeBuildNumberJson);
         }
 
+        /** Max CE build number */
         if (cabheader->MaxCEBuildNumber) {
             cJSON *maxCeBuildNumberJson = cJSON_CreateNumber(cabheader->MaxCEBuildNumber);
             cJSON_AddItemToObject(cabJson, "maxCeBuildNumber", maxCeBuildNumberJson);
@@ -658,7 +705,6 @@ int main(int argc, char **argv) {
 
         /** Files */
         cJSON *filesJson = cJSON_CreateArray();
-        // TODO
         CE_CAB_000_FILE_ENTRY *fileentry = (CE_CAB_000_FILE_ENTRY *)(file + cabheader->OffsetFiles);
         for (int i = 0; i < cabheader->NumEntriesFiles; i++) {
             cJSON *fileItem = cJSON_CreateObject();
@@ -675,6 +721,7 @@ int main(int argc, char **argv) {
             cJSON *directory = cJSON_CreateString(get_dir(fileentry->DirectoryId));
             cJSON_AddItemToObject(fileItem, "directory", directory);
 
+            // Flags
             if (fileentry->FlagsUpper & 0x8000) {
                 cJSON_AddItemToObject(fileItem, "isReferenceCountingSharedFile", cJSON_CreateTrue());
             }
@@ -687,16 +734,16 @@ int main(int argc, char **argv) {
             if (fileentry->FlagsUpper & 0x1000) {
                 cJSON_AddItemToObject(fileItem, "selfRegisterDll", cJSON_CreateTrue());
             }
-            if (fileentry->FlagsUpper & 0x0400) {
+            if (fileentry->FlagsLower & 0x0400) {
                 cJSON_AddItemToObject(fileItem, "doNotCopyUnlessTargetExists", cJSON_CreateTrue());
             }
-            if (fileentry->FlagsUpper & 0x0010) {
+            if (fileentry->FlagsLower & 0x0010) {
                 cJSON_AddItemToObject(fileItem, "overWriteTargetIfExists", cJSON_CreateTrue());
             }
-            if (fileentry->FlagsUpper & 0x0002) {
+            if (fileentry->FlagsLower & 0x0002) {
                 cJSON_AddItemToObject(fileItem, "doNotSkip", cJSON_CreateTrue());
             }
-            if (fileentry->FlagsUpper & 0x0001) {
+            if (fileentry->FlagsLower & 0x0001) {
                 cJSON_AddItemToObject(fileItem, "warnIfSkipped", cJSON_CreateTrue());
             }
 
@@ -707,7 +754,30 @@ int main(int argc, char **argv) {
 
         /** RegistryEntries */
         cJSON *registryEntriesJson = cJSON_CreateArray();
-        // TODO
+        CE_CAB_000_REGKEY_ENTRY *regkeyentry = (CE_CAB_000_REGKEY_ENTRY *)(file + cabheader->OffsetRegKeys);
+        for (int i = 0; i < cabheader->NumEntriesRegKeys; i++) {
+            const char *name = &(regkeyentry->KeyName);
+            const char *value = &(regkeyentry->KeyName) + strlen(&(regkeyentry->KeyName)) + 1;
+            const char *datatype = get_reg_datatype(regkeyentry->TypeFlagsUpper << 16 | regkeyentry->TypeFlagsLower);
+            const char *path = get_path(regkeyentry->HiveId);
+
+            cJSON *regKeyItem = cJSON_CreateObject();
+
+            cJSON *pathJson = cJSON_CreateString(path);
+            cJSON_AddItemToObject(regKeyItem, "path", pathJson);
+
+            cJSON *nameJson = strlen(name) ? cJSON_CreateString(name) : cJSON_CreateNull();
+            cJSON_AddItemToObject(regKeyItem, "name", nameJson);
+
+            cJSON *dataTypeJson = cJSON_CreateString(datatype);
+            cJSON_AddItemToObject(regKeyItem, "dataType", dataTypeJson);
+
+            cJSON *valueJson = cJSON_CreateString(value);
+            cJSON_AddItemToObject(regKeyItem, "value", valueJson);
+
+            regkeyentry = ((void *)regkeyentry) + regkeyentry->DataLength + sizeof(CE_CAB_000_REGKEY_ENTRY) - sizeof(uint16_t);
+            cJSON_AddItemToArray(registryEntriesJson, regKeyItem);
+        }
         cJSON_AddItemToObject(cabJson, "registryEntries", registryEntriesJson);
 
         /** Links */
@@ -715,8 +785,8 @@ int main(int argc, char **argv) {
         CE_CAB_000_LINK_ENTRY *linkentry = (CE_CAB_000_LINK_ENTRY *)(file + cabheader->OffsetLinks);
         for (int i = 0; i < cabheader->NumEntriesLinks; i++) {
             cJSON *linkItem = cJSON_CreateObject();
-            cJSON *linkId = cJSON_CreateNumber(linkentry->Id);
-            cJSON_AddItemToObject(linkItem, "linkId", linkId);
+            // cJSON *linkId = cJSON_CreateNumber(linkentry->Id);
+            // cJSON_AddItemToObject(linkItem, "linkId", linkId);
             cJSON *isFile = cJSON_CreateBool(linkentry->LinkType);
             cJSON_AddItemToObject(linkItem, "isFile", isFile);
             cJSON *targetId = cJSON_CreateNumber(linkentry->TargetId);
@@ -739,16 +809,71 @@ int main(int argc, char **argv) {
             cJSON_AddItemToArray(linksJson, linkItem);
         }
         cJSON_AddItemToObject(cabJson, "links", linksJson);
+        verbose("\nJSON");
 
         /** Stringified JSON Object */
         const char *stringJson = cJSON_Print(cabJson);
         if (stringJson == NULL) {
-            fprintf(stderr, "Failed to print monitor.\n");
+            fprintf(stderr, "Failed to print json.\n");
             exit(EXIT_FAILURE);
         }
 
         // Print JSON
+        verbose("Printing json now");
         puts(stringJson);
+        verbose("Printed json");
+    } else if (options->printReg) {
+        fprintf(stdout, "REGEDIT4\n");
+
+        int previoushiveid = -1;
+
+        CE_CAB_000_REGKEY_ENTRY *regkeyentry = (CE_CAB_000_REGKEY_ENTRY *)(file + cabheader->OffsetRegKeys);
+        for (int i = 0; i < cabheader->NumEntriesRegKeys; i++) {
+            const char *name = &(regkeyentry->KeyName);
+            const uint16_t hiveid = regkeyentry->HiveId;
+            const void *value = &(regkeyentry->KeyName) + strlen(&(regkeyentry->KeyName)) + 1;
+            const char *datatype = get_reg_datatype(regkeyentry->TypeFlagsUpper << 16 | regkeyentry->TypeFlagsLower);
+            const char *path = get_path(regkeyentry->HiveId);
+            const uint16_t datalength = regkeyentry->DataLength - strlen(&(regkeyentry->KeyName)) - 1;
+            uint8_t *ptr = (uint8_t *)value;
+            uint32_t regtype = (regkeyentry->TypeFlagsUpper << 16 | regkeyentry->TypeFlagsLower) & TYPE_REG_MASK;
+
+            if (previoushiveid != hiveid) {
+                fprintf(stdout, "\n[%s]\n", path);
+            }
+            //fprintf(stdout, "HideId: %d\n", regkeyentry->HiveId);
+            //fprintf(stdout, "DataLength: %d\n", datalength);
+
+            fprintf(stdout, strlen(name) ? "\"%s\"=" : "@=", name);
+            switch (regtype) {
+                case TYPE_REG_DWORD:
+                    fprintf(stdout, "dword:%08X", *((uint32_t *)value));
+                    break;
+                case TYPE_REG_SZ:
+                    fprintf(stdout, "\"%s\"", (char *)value);
+                    break;
+                case TYPE_REG_MULTI_SZ:
+                    fprintf(stdout, "hex(7):");
+                    for (uint16_t i = 0; i < datalength; i++) {
+                        if (i) putc(',', stdout);
+                        fprintf(stdout, "%02X", ptr[i]);
+                    }
+                    break;
+                case TYPE_REG_BINARY:
+                    fprintf(stdout, "hex:");
+                    for (uint16_t i = 0; i < datalength; i++) {
+                        if (i) putc(',', stdout);
+                        fprintf(stdout, "%02X", ptr[i]);
+                    }
+                    break;
+            }
+
+            putc('\n', stdout);
+
+            previoushiveid = hiveid;
+            regkeyentry = ((void *)regkeyentry) + regkeyentry->DataLength + sizeof(CE_CAB_000_REGKEY_ENTRY) - sizeof(uint16_t);
+        }
+
     } else {
         // Print output regularily
 
@@ -764,7 +889,9 @@ int main(int argc, char **argv) {
         }
     }
 
+#ifndef __MINGW32__
     // Unmap input file. Will do nothing if input file is not actually
     // memory mapped.
     munmap(file, file_size);
+#endif
 }

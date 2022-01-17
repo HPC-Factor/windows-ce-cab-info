@@ -1,4 +1,4 @@
-CC=gcc
+CC=/usr/bin/x86_64-w64-mingw32-gcc
 CFLAGS=-I. -fshort-wchar
 DEPS=src/WinCePEHeader.h src/WinCECab000Header.h src/cjson/cJSON.h
 OUT_DIR=dist
@@ -11,4 +11,4 @@ build: src/wcecabinfo.o src/cjson/cJSON.o
 	$(CC) -c -o $@ $< $(CFLAGS)
 
 clean:
-	rm -f src/*.o src/cjson/*.o dist/wcecabinfo
+	rm -f src/*.o src/cjson/*.o dist/wcecabinfo.exe

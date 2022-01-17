@@ -6,6 +6,12 @@
 
 #define CE_CAB_HEADER_SIGNATURE 0x4643534D
 
+#define TYPE_REG_MASK 0x00010001
+#define TYPE_REG_DWORD 0x00010001
+#define TYPE_REG_SZ 0x00000000
+#define TYPE_REG_MULTI_SZ 0x00010000
+#define TYPE_REG_BINARY 0x00000001
+
 const char* BASE_DIRS[] = {
     "%InstallDir%",
     "%CE1%",
@@ -89,14 +95,15 @@ typedef struct _CE_CAB_000_REGKEY_ENTRY {
     /** Variable Substitution */
     uint16_t VariableSubstitution;
     /** The type of entry data, and flags */
-    uint32_t TypeFlags;
+    uint16_t TypeFlagsLower;
+    uint16_t TypeFlagsUpper;
     /** Length of the registry key specification to follow, in bytes */
-    uint16_t SpecLength;
+    uint16_t DataLength;
     /* Registry entry data. This begins with a null terminated ASCII
      * string, giving the name of the registry key. If the empty string is used
      * here, this is the default key for the given hive. Immediately following
      * the null byte of the string is the data for the registry entry */
-    char Spec;
+    char KeyName;
 } CE_CAB_000_REGKEY_ENTRY;
 
 typedef struct _CE_CAB_000_LINK_ENTRY {
@@ -225,19 +232,19 @@ typedef struct _CE_CAB_000_HEADER {
 #define CE_CAB_000_ARCH_I586_NAME CE_ARCH_X86
 /** PowerPC 601 */
 #define CE_CAB_000_ARCH_PPC601 601
-#define CE_CAB_000_ARCH_PPC601_NAME "UNKNOWN"
+#define CE_CAB_000_ARCH_PPC601_NAME "PPC601"
 /** PowerPC 603 */
 #define CE_CAB_000_ARCH_PPC603 603
-#define CE_CAB_000_ARCH_PPC603_NAME "UNKNOWN"
+#define CE_CAB_000_ARCH_PPC603_NAME "PPC602"
 /** PowerPC 604 */
 #define CE_CAB_000_ARCH_PPC604 604
-#define CE_CAB_000_ARCH_PPC604_NAME "UNKNOWN"
+#define CE_CAB_000_ARCH_PPC604_NAME "PPC604"
 /** PowerPC 620 */
 #define CE_CAB_000_ARCH_PPC620 620
-#define CE_CAB_000_ARCH_PPC620_NAME "UNKNOWN"
+#define CE_CAB_000_ARCH_PPC620_NAME "PPC620"
 /** Motorola 821 */
 #define CE_CAB_000_ARCH_MOTOROLA_821 821
-#define CE_CAB_000_ARCH_MOTOROLA_821_NAME "UNKNOWN"
+#define CE_CAB_000_ARCH_MOTOROLA_821_NAME "MOTOROLA821"
 /** ARM 720 */
 #define CE_CAB_000_ARCH_ARM720 1824
 #define CE_CAB_000_ARCH_ARM720_NAME CE_ARCH_ARM
@@ -264,7 +271,7 @@ typedef struct _CE_CAB_000_HEADER {
 #define CE_CAB_000_ARCH_HITACHI_SH4_NAME CE_ARCH_SH4
 /** Alpha 21064 */
 #define CE_CAB_000_ARCH_ALPHA 21064
-#define CE_CAB_000_ARCH_ALPHA_NAME "UNKNOWN"
+#define CE_CAB_000_ARCH_ALPHA_NAME "ALPHA"
 /** ARM 7TDMI */
 #define CE_CAB_000_ARCH_ARM7TDMI 70001
-#define CE_CAB_000_ARCH_ARM7TDMI_NAME CE_ARCH_ARM
+#define CE_CAB_000_ARCH_ARM7TDMI_NAME CE_ARCH_THUMB

@@ -1,5 +1,7 @@
 testdata/
+test000/
 .vscode/
 pedata/
 dist/
-src/*.o
+src/**/*.o
+test.sh
