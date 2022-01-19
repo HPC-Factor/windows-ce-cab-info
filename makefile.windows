@@ -1,5 +1,5 @@
 CC=/usr/bin/x86_64-w64-mingw32-gcc
-CFLAGS=-I. -fshort-wchar
+CFLAGS=-I. -fshort-wchar -g
 DEPS=src/WinCePEHeader.h src/WinCECab000Header.h src/cjson/cJSON.h
 OUT_DIR=dist
 

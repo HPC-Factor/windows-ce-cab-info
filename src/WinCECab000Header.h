@@ -125,7 +125,7 @@ typedef struct _CE_CAB_000_LINK_ENTRY {
     /** The link type. This is 0 if the link target is a directory, or 1 if the
      * link target is a file */
     uint16_t LinkType;
-    /** Length of the registry key specification to follow, in bytes */
+    /** Length of the link specification to follow, in bytes */
     uint16_t SpecLength;
     /* The link specification. This is simply an array of 16-bit (2
      * byte) numbers, where each number is a string ID. The final number is

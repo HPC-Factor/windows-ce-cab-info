@@ -82,9 +82,14 @@ export type WinCeCab000Header = {
     minCeBuildNumber?: number;
     maxCeBuildNumber?: number;
 
+    directories: {
+        id: number,
+        path: string;
+    }[];
+
     files: {
-        fileName: string;
-        fileId: number;
+        id: number;
+        name: string;
         directory: string;
         /** If bit is set, this file is a reference-counting shared file. It is not deleted at uninstall time unless its reference count is 0 */
         isReferenceCountingSharedFile: boolean;
@@ -122,7 +127,7 @@ export type WinCeCab000Header = {
         isFile: boolean;
         targetId: number;
         linkPath: string;
-        //targetPath: string;
+        targetPath: string;
     }[];
 
 };

@@ -67,8 +67,8 @@ void usage(int status) {
         "\n"
         "Examples:\n"
         "  " PROGRAM_NAME
-        " f.cab     Print information about file f.cab.\n"
-        "  " PROGRAM_NAME " -j f.000  Print JSON formatted information about file f.000.");
+        " f.cab     Print information about file f.cab\n"
+        "  " PROGRAM_NAME " -j f.000  Print JSON formatted information about file f.000");
     exit(status);
 }
 
@@ -351,16 +351,21 @@ const char *get_hive(uint16_t hiveid) {
  * @return const char* pointer to the string, or 000 if string does not exist.
  */
 const char *get_string(uint16_t stringid) {
+    verbose("getString(%d) = ", stringid);
+
     CE_CAB_000_STRING_ENTRY *stringentry = (CE_CAB_000_STRING_ENTRY *)(file + cabheader->OffsetStrings);
     for (int i = 0; i < cabheader->NumEntriesString; i++) {
         // printf("\n    ID: %d\n", stringentry->Id);
         // printf("   Len: %d\n", stringentry->StringLength);
         // printf("String: %s\n", &(stringentry->String));
         if (stringentry->Id == stringid) {
+            verbose("\"%s\" (length: %d)\n", &(stringentry->String), stringentry->StringLength);
+
             return &(stringentry->String);
         }
         stringentry = ((void *)stringentry) + stringentry->StringLength + sizeof(uint16_t) + sizeof(uint16_t);
     }
+    verbose("NULL\n");
     return NULL;
 }
 
@@ -371,15 +376,17 @@ const char *get_string(uint16_t stringid) {
  * @param spec pointer to spec array
  * @return const char* parsed String
  */
-const char *parse_spec(uint16_t spec[], char *delimiter) {
+const char *parse_spec(uint16_t *spec, uint16_t speclength, char *delimiter) {
     char *buf = (char *)malloc(256);
     strcpy(buf, "");
 
-    for (int i = 0; spec[i]; i++) {
+    for (int i = 0; i < (speclength / sizeof(uint16_t) - 1); i++) {
+        verbose("spec[%d] = %d\n", i, spec[i]);
         if (i) {
             strcat(buf, delimiter);
         }
         strcat(buf, get_string(spec[i]));
+        verbose("buf=\"%s\"\n", buf);
     }
 
     return buf;
@@ -399,7 +406,7 @@ const char *get_dir(uint16_t directoryid) {
         //printf("   Len: %d\n", direntry->SpecLength);
         //printf("String: %s\n", parse_spec(&(direntry->Spec), "\\"));
         if (direntry->Id == directoryid) {
-            return parse_spec(&(direntry->Spec), "\\");
+            return parse_spec(&(direntry->Spec), direntry->SpecLength, "\\");
         }
         direntry = ((void *)direntry) + direntry->SpecLength + sizeof(uint16_t) + sizeof(uint16_t);
     }
@@ -492,11 +499,21 @@ const char *concat_paths(const char *path1, const char *path2) {
     return out;
 }
 
-const char *get_path(uint16_t hiveid) {
+const char *get_file_full_path(uint16_t fileid) {
+    CE_CAB_000_FILE_ENTRY *fileentry = (CE_CAB_000_FILE_ENTRY *)(file + cabheader->OffsetFiles);
+    for (int i = 0; i < cabheader->NumEntriesFiles; i++) {
+        if (fileid == fileentry->Id) {
+            return concat_paths(get_dir(fileentry->DirectoryId), &(fileentry->FileName));
+        }
+        fileentry = ((void *)fileentry) + fileentry->FileNameLength + sizeof(CE_CAB_000_FILE_ENTRY) - sizeof(uint16_t);
+    }
+}
+
+const char *get_reg_path(uint16_t hiveid) {
     CE_CAB_000_REGHIVE_ENTRY *reghiveentry = (CE_CAB_000_REGHIVE_ENTRY *)(file + cabheader->OffsetRegHives);
     for (int i = 0; i < cabheader->NumEntriesRegHives; i++) {
         uint16_t id = reghiveentry->Id;
-        if (id == hiveid) return concat_paths(get_hive(reghiveentry->HiveRoot), parse_spec(&(reghiveentry->Spec), "\\"));
+        if (id == hiveid) return concat_paths(get_hive(reghiveentry->HiveRoot), parse_spec(&(reghiveentry->Spec), reghiveentry->SpecLength, "\\"));
         reghiveentry = ((void *)reghiveentry) + reghiveentry->SpecLength + sizeof(CE_CAB_000_REGHIVE_ENTRY) - sizeof(uint16_t);
     }
     return NULL;
@@ -630,7 +647,6 @@ int main(int argc, char **argv) {
     const char **unsupported = get_unsupported(usup, usuplen);
 
     if (options->printJson) {
-        verbose("JSON");
         char *buffer = malloc(256);
 
         /** Root JSON Object */
@@ -703,6 +719,28 @@ int main(int argc, char **argv) {
             cJSON_AddItemToObject(cabJson, "maxCeBuildNumber", maxCeBuildNumberJson);
         }
 
+        /** Directories */
+        cJSON *directoriesJson = cJSON_CreateArray();
+        CE_CAB_000_DIRECTORY_ENTRY *directoryentry = (CE_CAB_000_DIRECTORY_ENTRY *)(file + cabheader->OffsetDirs);
+        for (int i = 0; i < cabheader->NumEntriesDirs; i++) {
+            cJSON *directoryItem = cJSON_CreateObject();
+
+            // cJSON *specLength = cJSON_CreateNumber(directoryentry->SpecLength);
+            // cJSON_AddItemToObject(directoryItem, "specLength", specLength);
+
+            /** Directory ID */
+            cJSON *directoryId = cJSON_CreateNumber(directoryentry->Id);
+            cJSON_AddItemToObject(directoryItem, "id", directoryId);
+
+            /** Directory Path */
+            cJSON *directoryPath = cJSON_CreateString(parse_spec(&(directoryentry->Spec), directoryentry->SpecLength, "\\"));
+            cJSON_AddItemToObject(directoryItem, "path", directoryPath);
+
+            directoryentry = ((void *)directoryentry) + directoryentry->SpecLength + sizeof(CE_CAB_000_DIRECTORY_ENTRY) - sizeof(uint16_t);
+            cJSON_AddItemToArray(directoriesJson, directoryItem);
+        }
+        cJSON_AddItemToObject(cabJson, "directories", directoriesJson);
+
         /** Files */
         cJSON *filesJson = cJSON_CreateArray();
         CE_CAB_000_FILE_ENTRY *fileentry = (CE_CAB_000_FILE_ENTRY *)(file + cabheader->OffsetFiles);
@@ -711,11 +749,11 @@ int main(int argc, char **argv) {
 
             /** File ID */
             cJSON *fileId = cJSON_CreateNumber(fileentry->Id);
-            cJSON_AddItemToObject(fileItem, "fileId", fileId);
+            cJSON_AddItemToObject(fileItem, "id", fileId);
 
             /** File Name */
             cJSON *fileName = cJSON_CreateString(&(fileentry->FileName));
-            cJSON_AddItemToObject(fileItem, "fileName", fileName);
+            cJSON_AddItemToObject(fileItem, "name", fileName);
 
             /** File Directory */
             cJSON *directory = cJSON_CreateString(get_dir(fileentry->DirectoryId));
@@ -759,20 +797,55 @@ int main(int argc, char **argv) {
             const char *name = &(regkeyentry->KeyName);
             const char *value = &(regkeyentry->KeyName) + strlen(&(regkeyentry->KeyName)) + 1;
             const char *datatype = get_reg_datatype(regkeyentry->TypeFlagsUpper << 16 | regkeyentry->TypeFlagsLower);
-            const char *path = get_path(regkeyentry->HiveId);
+            const uint16_t datalength = regkeyentry->DataLength - strlen(&(regkeyentry->KeyName)) - 1;
+            uint32_t regtype = (regkeyentry->TypeFlagsUpper << 16 | regkeyentry->TypeFlagsLower) & TYPE_REG_MASK;
+            const char *path = get_reg_path(regkeyentry->HiveId);
+            uint8_t *ptr = (uint8_t *)value;
 
+            /** Reg Key Item */
             cJSON *regKeyItem = cJSON_CreateObject();
 
+            /** Reg path */
             cJSON *pathJson = cJSON_CreateString(path);
             cJSON_AddItemToObject(regKeyItem, "path", pathJson);
 
+            /** Reg Item name. Null if default */
             cJSON *nameJson = strlen(name) ? cJSON_CreateString(name) : cJSON_CreateNull();
             cJSON_AddItemToObject(regKeyItem, "name", nameJson);
 
+            /** Reg value data type */
             cJSON *dataTypeJson = cJSON_CreateString(datatype);
             cJSON_AddItemToObject(regKeyItem, "dataType", dataTypeJson);
 
-            cJSON *valueJson = cJSON_CreateString(value);
+            /** Reg item data */
+            cJSON *valueJson;
+            char *val;
+            switch (regtype) {
+                case TYPE_REG_DWORD:
+                    val = (char *)malloc(16);
+                    sprintf(val, "dword:%08X", *((uint32_t *)value));
+                    break;
+                case TYPE_REG_SZ:
+                    val = (char *)value;
+                    break;
+                case TYPE_REG_MULTI_SZ:
+                    val = malloc(8 + datalength * 3);
+                    sprintf(val, "hex(7):");
+                    for (uint16_t i = 0; i < datalength; i++) {
+                        if (i) strcat(val, ",");
+                        sprintf(val, "%02X", ptr[i]);
+                    }
+                    break;
+                case TYPE_REG_BINARY:
+                    val = malloc(8 + datalength * 3);
+                    sprintf(val, "hex:");
+                    for (uint16_t i = 0; i < datalength; i++) {
+                        if (i) strcat(val, ",");
+                        sprintf(val, "%02X", ptr[i]);
+                    }
+                    break;
+            }
+            valueJson = cJSON_CreateString(val);
             cJSON_AddItemToObject(regKeyItem, "value", valueJson);
 
             regkeyentry = ((void *)regkeyentry) + regkeyentry->DataLength + sizeof(CE_CAB_000_REGKEY_ENTRY) - sizeof(uint16_t);
@@ -784,32 +857,40 @@ int main(int argc, char **argv) {
         cJSON *linksJson = cJSON_CreateArray();
         CE_CAB_000_LINK_ENTRY *linkentry = (CE_CAB_000_LINK_ENTRY *)(file + cabheader->OffsetLinks);
         for (int i = 0; i < cabheader->NumEntriesLinks; i++) {
+            const char *basedir = get_basedir(linkentry->BaseDirectory);
+            const char *linkspec = parse_spec(&(linkentry->Spec), linkentry->SpecLength + 2, "\\");
+
             cJSON *linkItem = cJSON_CreateObject();
+
+            // cJSON *specLength = cJSON_CreateNumber(linkentry->SpecLength);
+            // cJSON_AddItemToObject(linkItem, "specLength", specLength);
+
             // cJSON *linkId = cJSON_CreateNumber(linkentry->Id);
             // cJSON_AddItemToObject(linkItem, "linkId", linkId);
+
             cJSON *isFile = cJSON_CreateBool(linkentry->LinkType);
             cJSON_AddItemToObject(linkItem, "isFile", isFile);
+
             cJSON *targetId = cJSON_CreateNumber(linkentry->TargetId);
             cJSON_AddItemToObject(linkItem, "targetId", targetId);
 
-            cJSON *linkPath = cJSON_CreateString(concat_paths(get_basedir(linkentry->BaseDirectory), parse_spec(&(linkentry->Spec), "\\")));
+            cJSON *linkPath = cJSON_CreateString(concat_paths(basedir, linkspec));
             cJSON_AddItemToObject(linkItem, "linkPath", linkPath);
 
             // TODO
-            //cJSON *targetPath = cJSON_CreateString("\\test\\");
-            //cJSON_AddItemToObject(linkItem, "targetPath", targetPath);
+            cJSON *targetPath;
+            if (linkentry->LinkType) {
+                targetPath = cJSON_CreateString(get_file_full_path(linkentry->TargetId));
+            } else {
+                targetPath = cJSON_CreateString(get_dir(linkentry->TargetId));
+            }
+            cJSON_AddItemToObject(linkItem, "targetPath", targetPath);
 
-            //printf("     ID: %d\n", linkentry->Id);
-            //printf("BaseDir: %s\n", BASE_DIRS[linkentry->BaseDirectory]);
-            //printf(" Target: %d\n", linkentry->TargetId);
-            //printf("   Type: %d\n", linkentry->LinkType);
-            //printf(" Length: %d\n", linkentry->SpecLength);
-            //printf("   Spec: %s\n\n", parse_spec(&(linkentry->Spec)));
             linkentry = ((void *)linkentry) + linkentry->SpecLength + sizeof(CE_CAB_000_LINK_ENTRY) - sizeof(uint16_t);
+
             cJSON_AddItemToArray(linksJson, linkItem);
         }
         cJSON_AddItemToObject(cabJson, "links", linksJson);
-        verbose("\nJSON");
 
         /** Stringified JSON Object */
         const char *stringJson = cJSON_Print(cabJson);
@@ -819,10 +900,9 @@ int main(int argc, char **argv) {
         }
 
         // Print JSON
-        verbose("Printing json now");
         puts(stringJson);
-        verbose("Printed json");
     } else if (options->printReg) {
+        // Reg file first line
         fprintf(stdout, "REGEDIT4\n");
 
         int previoushiveid = -1;
@@ -833,7 +913,7 @@ int main(int argc, char **argv) {
             const uint16_t hiveid = regkeyentry->HiveId;
             const void *value = &(regkeyentry->KeyName) + strlen(&(regkeyentry->KeyName)) + 1;
             const char *datatype = get_reg_datatype(regkeyentry->TypeFlagsUpper << 16 | regkeyentry->TypeFlagsLower);
-            const char *path = get_path(regkeyentry->HiveId);
+            const char *path = get_reg_path(regkeyentry->HiveId);
             const uint16_t datalength = regkeyentry->DataLength - strlen(&(regkeyentry->KeyName)) - 1;
             uint8_t *ptr = (uint8_t *)value;
             uint32_t regtype = (regkeyentry->TypeFlagsUpper << 16 | regkeyentry->TypeFlagsLower) & TYPE_REG_MASK;
@@ -880,9 +960,13 @@ int main(int argc, char **argv) {
         printf("appName: %s\n", appName);
         printf("provider: %s\n", provider);
 
+        if (architecture) {
+            printf("architecture: %s\n", architecture);
+        }
+
         if (*unsupported) {
             printf("unsupported: %s", unsupported[0]);
-            for (int i = 1; unsupported[i]; i++) {
+            for (int i = 1; unsupported[i] && strlen(unsupported[i]); i++) {
                 printf(", %s", unsupported[i]);
             }
             putc('\n', stdout);
