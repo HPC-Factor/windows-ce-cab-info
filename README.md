@@ -15,7 +15,7 @@ For being able to pass .cab files to the program, [cabextract](https://www.cabex
 ## Usage
 
 ```
-Usage: wcecabinfo [-j] [-n] [-f FIELDNAME] FILE
+Usage: wcecabinfo [-j] [-r] [-V] FILE
 Print information about a CAB .000 file. Input can be either a cab file or an already extracted .000 file.
 If a cab file is provided, cabextract is needed to handle extraction.
 

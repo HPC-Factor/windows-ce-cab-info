@@ -70,14 +70,14 @@ export type WinCeCab000Header = {
     unsupported?: string[];
 
     minCeVersion?: {
-        minCeVersionMinor: number;
-        minCeVersionMajor: number;
-        minCeVersionString: string;
+        major: number;
+        minor: number;
+        stringValue: string;
     };
     maxCeVersion?: {
-        maxCeVersionMinor: number;
-        maxCeVersionMajor: number;
-        maxCeVersionString: string;
+        major: number;
+        minor: number;
+        stringValue: string;
     };
     minCeBuildNumber?: number;
     maxCeBuildNumber?: number;

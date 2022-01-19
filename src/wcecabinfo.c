@@ -52,7 +52,7 @@ static const CE_CAB_000_HEADER *cabheader;
 void usage(int status) {
     puts(
         "Usage: " PROGRAM_NAME
-        " [-j] [-n] [-f FIELDNAME] FILE"
+        " [-j] [-r] [-V] FILE"
         "\n"
         "Print information about a CAB .000 file. Input can be either a cab file or an already extracted .000 file.\n"
         "If a cab file is provided, cabextract is needed to handle extraction.\n"
@@ -289,7 +289,7 @@ static int verbose(const char *restrict format, ...) {
 
     va_list args;
     va_start(args, format);
-    int ret = vprintf(format, args);
+    int ret = vfprintf(stderr, format, args);
     va_end(args);
 
     return ret;
@@ -351,21 +351,18 @@ const char *get_hive(uint16_t hiveid) {
  * @return const char* pointer to the string, or 000 if string does not exist.
  */
 const char *get_string(uint16_t stringid) {
-    verbose("getString(%d) = ", stringid);
+    //verbose("getString(%d) = ", stringid);
 
     CE_CAB_000_STRING_ENTRY *stringentry = (CE_CAB_000_STRING_ENTRY *)(file + cabheader->OffsetStrings);
     for (int i = 0; i < cabheader->NumEntriesString; i++) {
-        // printf("\n    ID: %d\n", stringentry->Id);
-        // printf("   Len: %d\n", stringentry->StringLength);
-        // printf("String: %s\n", &(stringentry->String));
         if (stringentry->Id == stringid) {
-            verbose("\"%s\" (length: %d)\n", &(stringentry->String), stringentry->StringLength);
+            //verbose("\"%s\" (length: %d)\n", &(stringentry->String), stringentry->StringLength);
 
             return &(stringentry->String);
         }
         stringentry = ((void *)stringentry) + stringentry->StringLength + sizeof(uint16_t) + sizeof(uint16_t);
     }
-    verbose("NULL\n");
+    //verbose("NULL\n");
     return NULL;
 }
 
@@ -381,12 +378,12 @@ const char *parse_spec(uint16_t *spec, uint16_t speclength, char *delimiter) {
     strcpy(buf, "");
 
     for (int i = 0; i < (speclength / sizeof(uint16_t) - 1); i++) {
-        verbose("spec[%d] = %d\n", i, spec[i]);
+        //verbose("spec[%d] = %d\n", i, spec[i]);
         if (i) {
             strcat(buf, delimiter);
         }
         strcat(buf, get_string(spec[i]));
-        verbose("buf=\"%s\"\n", buf);
+        //verbose("buf=\"%s\"\n", buf);
     }
 
     return buf;
@@ -402,9 +399,6 @@ const char *get_basedir(uint16_t basedirid) {
 const char *get_dir(uint16_t directoryid) {
     CE_CAB_000_DIRECTORY_ENTRY *direntry = (CE_CAB_000_DIRECTORY_ENTRY *)(file + cabheader->OffsetDirs);
     for (int i = 0; i < cabheader->NumEntriesDirs; i++) {
-        //printf("\n    ID: %d\n", direntry->Id);
-        //printf("   Len: %d\n", direntry->SpecLength);
-        //printf("String: %s\n", parse_spec(&(direntry->Spec), "\\"));
         if (direntry->Id == directoryid) {
             return parse_spec(&(direntry->Spec), direntry->SpecLength, "\\");
         }
@@ -416,12 +410,6 @@ const char *get_dir(uint16_t directoryid) {
 const char *get_file(uint16_t fileid) {
     CE_CAB_000_FILE_ENTRY *fileentry = (CE_CAB_000_FILE_ENTRY *)(file + cabheader->OffsetFiles);
     for (int i = 0; i < cabheader->NumEntriesFiles; i++) {
-        //printf("\n    ID: %d\n", fileentry->Id);
-        //printf(" DirId: %d\n", fileentry->DirectoryId);
-        //printf(" Flags: %X\n", fileentry->FlagsLower);
-        //printf(" Flags: %X\n", fileentry->FlagsUpper);
-        //printf("   Len: %d\n", fileentry->FileNameLength);
-        //printf("String: %s\n\n", &(fileentry->FileName));
         if (fileentry->Id == fileid) {
             return &(fileentry->FileName);
         }
@@ -555,7 +543,7 @@ int main(int argc, char **argv) {
 
             // Check if cabextract succeeded
             int status = pclose(pcabextract);
-            verbose("cabextract existed with status %d\n", status);
+            verbose("cabextract exited with status %d\n", status);
             if (status) {
                 fprintf(stderr, "Error: cabextract existed with status %d\n", status);
                 exit(EXIT_FAILURE);
@@ -682,13 +670,13 @@ int main(int argc, char **argv) {
             cJSON *minCeVersionJson = cJSON_CreateObject();
             /** Min CE Version Major JSON Object */
             cJSON *minCeVersionMajorJson = cJSON_CreateNumber(cabheader->MinCEVersionMajor);
-            cJSON_AddItemToObject(minCeVersionJson, "minCeVersionMajor", minCeVersionMajorJson);
+            cJSON_AddItemToObject(minCeVersionJson, "major", minCeVersionMajorJson);
             cJSON *minCeVersionMinorJson = cJSON_CreateNumber(cabheader->MinCEVersionMinor);
-            cJSON_AddItemToObject(minCeVersionJson, "minCeVersionMinor", minCeVersionMinorJson);
+            cJSON_AddItemToObject(minCeVersionJson, "minor", minCeVersionMinorJson);
             /** Min CE Version String */
             sprintf(buffer, "%d.%d", cabheader->MinCEVersionMajor, cabheader->MinCEVersionMinor);
             cJSON *minCeVersionStringJson = cJSON_CreateString(buffer);
-            cJSON_AddItemToObject(minCeVersionJson, "minCeVersionString", minCeVersionStringJson);
+            cJSON_AddItemToObject(minCeVersionJson, "stringValue", minCeVersionStringJson);
             cJSON_AddItemToObject(cabJson, "minCeVersion", minCeVersionJson);
         }
 
@@ -697,13 +685,13 @@ int main(int argc, char **argv) {
             cJSON *maxCeVersionJson = cJSON_CreateObject();
             /** Min CE Version Major JSON Object */
             cJSON *maxCeVersionMajorJson = cJSON_CreateNumber(cabheader->MaxCEVersionMajor);
-            cJSON_AddItemToObject(maxCeVersionJson, "maxCeVersionMajor", maxCeVersionMajorJson);
+            cJSON_AddItemToObject(maxCeVersionJson, "major", maxCeVersionMajorJson);
             cJSON *maxCeVersionMinorJson = cJSON_CreateNumber(cabheader->MaxCEVersionMinor);
-            cJSON_AddItemToObject(maxCeVersionJson, "maxCeVersionMinor", maxCeVersionMinorJson);
+            cJSON_AddItemToObject(maxCeVersionJson, "minor", maxCeVersionMinorJson);
             /** Min CE Version String */
             sprintf(buffer, "%d.%d", cabheader->MaxCEVersionMajor, cabheader->MaxCEVersionMinor);
             cJSON *maxCeVersionStringJson = cJSON_CreateString(buffer);
-            cJSON_AddItemToObject(maxCeVersionJson, "maxCeVersionString", maxCeVersionStringJson);
+            cJSON_AddItemToObject(maxCeVersionJson, "stringValue", maxCeVersionStringJson);
             cJSON_AddItemToObject(cabJson, "maxCeVersion", maxCeVersionJson);
         }
 
@@ -877,7 +865,6 @@ int main(int argc, char **argv) {
             cJSON *linkPath = cJSON_CreateString(concat_paths(basedir, linkspec));
             cJSON_AddItemToObject(linkItem, "linkPath", linkPath);
 
-            // TODO
             cJSON *targetPath;
             if (linkentry->LinkType) {
                 targetPath = cJSON_CreateString(get_file_full_path(linkentry->TargetId));
@@ -970,6 +957,18 @@ int main(int argc, char **argv) {
                 printf(", %s", unsupported[i]);
             }
             putc('\n', stdout);
+        }
+        if (cabheader->MinCEVersionMajor) {
+            printf("minCeVersion: %d.%d\n", cabheader->MinCEVersionMajor, cabheader->MinCEVersionMinor);
+        }
+        if (cabheader->MaxCEVersionMajor) {
+            printf("maxCeVersion: %d.%d\n", cabheader->MaxCEVersionMajor, cabheader->MaxCEVersionMinor);
+        }
+        if (cabheader->MinCEBuildNumber) {
+            printf("minCeBuildNumber: %d\n", cabheader->MinCEBuildNumber);
+        }
+        if (cabheader->MaxCEBuildNumber) {
+            printf("maxCeBuildNumber: %d\n", cabheader->MaxCEBuildNumber);
         }
     }
 
