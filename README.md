@@ -71,6 +71,12 @@ This tool supports outputting the registry data in the Windows .reg format, use 
 make clean && make
 ```
 
+Installing
+
+```bash
+make install
+```
+
 ## Credits
 
 Thanks go to

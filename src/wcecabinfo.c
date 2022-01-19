@@ -19,7 +19,7 @@
 #include "cjson/cJSON.h"
 
 #define PROGRAM_NAME "wcecabinfo"
-#define PROGRAM_VERSION "0.2.0"
+#define PROGRAM_VERSION "0.9.0"
 
 struct opts {
     /** Print output as JSON */
@@ -351,18 +351,18 @@ const char *get_hive(uint16_t hiveid) {
  * @return const char* pointer to the string, or 000 if string does not exist.
  */
 const char *get_string(uint16_t stringid) {
-    //verbose("getString(%d) = ", stringid);
+    // verbose("getString(%d) = ", stringid);
 
     CE_CAB_000_STRING_ENTRY *stringentry = (CE_CAB_000_STRING_ENTRY *)(file + cabheader->OffsetStrings);
     for (int i = 0; i < cabheader->NumEntriesString; i++) {
         if (stringentry->Id == stringid) {
-            //verbose("\"%s\" (length: %d)\n", &(stringentry->String), stringentry->StringLength);
+            // verbose("\"%s\" (length: %d)\n", &(stringentry->String), stringentry->StringLength);
 
             return &(stringentry->String);
         }
         stringentry = ((void *)stringentry) + stringentry->StringLength + sizeof(uint16_t) + sizeof(uint16_t);
     }
-    //verbose("NULL\n");
+    // verbose("NULL\n");
     return NULL;
 }
 
@@ -378,12 +378,12 @@ const char *parse_spec(uint16_t *spec, uint16_t speclength, char *delimiter) {
     strcpy(buf, "");
 
     for (int i = 0; i < (speclength / sizeof(uint16_t) - 1); i++) {
-        //verbose("spec[%d] = %d\n", i, spec[i]);
+        // verbose("spec[%d] = %d\n", i, spec[i]);
         if (i) {
             strcat(buf, delimiter);
         }
         strcat(buf, get_string(spec[i]));
-        //verbose("buf=\"%s\"\n", buf);
+        // verbose("buf=\"%s\"\n", buf);
     }
 
     return buf;
@@ -466,7 +466,7 @@ const char *get_architecture(uint32_t archid) {
 }
 
 const char *get_reg_datatype(uint32_t flags) {
-    //printf("FLAGS: 0x%08x", flags);
+    // printf("FLAGS: 0x%08x", flags);
     uint32_t masked = flags & 0x00010001;
     switch (masked) {
         case TYPE_REG_DWORD:
@@ -587,11 +587,21 @@ int main(int argc, char **argv) {
     verbose("Opened file, size: %d\n", file_size);
 
     if (!file_size) {
-        fprintf(stderr, "Input size is 0");
+        fprintf(stderr, "Error: Input size is 0\n");
         exit(EXIT_FAILURE);
     }
 
     cabheader = (CE_CAB_000_HEADER *)file;
+
+    if (cabheader->AsciiSignature != CE_CAB_000_HEADER_SIGNATURE) {
+        fprintf(stderr, "Error: Input file is not a .000 file\n");
+        exit(EXIT_FAILURE);
+    }
+
+    if (cabheader->FileLength != file_size) {
+        fprintf(stderr, "Error: 000 header file length (%d) and actual file length (%d) don't match\n", cabheader->FileLength, (uint32_t)file_size);
+        exit(EXIT_FAILURE);
+    }
 
     verbose("AsciiSignature: %#08X\n", cabheader->AsciiSignature);
     verbose("Unknown1: %d\n", cabheader->Unknown1);
@@ -908,8 +918,8 @@ int main(int argc, char **argv) {
             if (previoushiveid != hiveid) {
                 fprintf(stdout, "\n[%s]\n", path);
             }
-            //fprintf(stdout, "HideId: %d\n", regkeyentry->HiveId);
-            //fprintf(stdout, "DataLength: %d\n", datalength);
+            // fprintf(stdout, "HideId: %d\n", regkeyentry->HiveId);
+            // fprintf(stdout, "DataLength: %d\n", datalength);
 
             fprintf(stdout, strlen(name) ? "\"%s\"=" : "@=", name);
             switch (regtype) {
