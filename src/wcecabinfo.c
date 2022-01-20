@@ -12,6 +12,9 @@
 #include <unistd.h>
 #ifndef __MINGW32__
 #include <sys/mman.h>
+#else
+#include <fcntl.h>
+#include <io.h>
 #endif
 
 #include "WinCEArchitecture.h"
@@ -235,7 +238,27 @@ uint8_t filehasheader(const char *file_path, const uint32_t header_signature) {
     return c == header_signature;
 }
 
-#define CHUNK_SIZE 1024
+static bool verbose_enabled = false;
+
+/**
+ * @brief Print verbose message
+ *
+ * @param format Format string
+ * @param ... varargs
+ * @return int return code of vprintf
+ */
+static int verbose(const char *restrict format, ...) {
+    if (!verbose_enabled) return 0;
+
+    va_list args;
+    va_start(args, format);
+    int ret = vfprintf(stderr, format, args);
+    va_end(args);
+
+    return ret;
+}
+
+#define CHUNK_SIZE 128
 
 /**
  * @brief Read 000 file from an input stream
@@ -244,7 +267,7 @@ uint8_t filehasheader(const char *file_path, const uint32_t header_signature) {
  * @param file_info struct to write file handle and size into
  * @return uint8_t*
  */
-uint8_t read000filestream(FILE *stream, infile_struct *file_info) {
+void read000filestream(FILE *stream, infile_struct *file_info) {
     void *buffer = malloc(CHUNK_SIZE);
 
     size_t c = 0;
@@ -271,28 +294,6 @@ uint8_t read000filestream(FILE *stream, infile_struct *file_info) {
 
     file_info->size = file_size;
     file_info->file = buffer;
-
-    return 1;
-}
-
-static bool verbose_enabled = false;
-
-/**
- * @brief Print verbose message
- *
- * @param format Format string
- * @param ... varargs
- * @return int return code of vprintf
- */
-static int verbose(const char *restrict format, ...) {
-    if (!verbose_enabled) return 0;
-
-    va_list args;
-    va_start(args, format);
-    int ret = vfprintf(stderr, format, args);
-    va_end(args);
-
-    return ret;
 }
 
 const char **get_unsupported(const char *usup, uint16_t len) {
@@ -528,24 +529,37 @@ int main(int argc, char **argv) {
             if (!strcasecmp(ext, "CAB")) {
                 fprintf(stderr, "Warning: File appears to be a CAB file, but does not have a .cab extension");
             }
+            char *extractcmd = malloc(256 + strlen(options->infile));
+
+#ifndef __MINGW32__
+            // Linux
             // check if cabextract is available
             if (system("which cabextract > /dev/null 2>&1")) {
                 fprintf(stderr, "cabextract not found. Please install this dependency.\nhttps://www.cabextract.org.uk/\n");
                 exit(EXIT_FAILURE);
             }
             // Use cabextract to extract the 000 file and read the pipe
-            char *cabextractcmd = malloc(256 + strlen(options->infile));
-            sprintf(cabextractcmd, "cabextract --pipe --filter *.000 %s", options->infile);
-            FILE *pcabextract = popen(cabextractcmd, "r");
+            sprintf(extractcmd, "cabextract --pipe --filter *.000 \"%s\"", options->infile);
+            FILE *pextract = popen(extractcmd, "r");
 
-            // Read cabextract output
-            read000filestream(pcabextract, &file_info);
+#else
+            // Win32
+            if (system("7z > nul 2>&1")) {
+                fprintf(stderr, "7-zip not found. Please install this dependency and add\nthe directory containing 7z.exe to the PATH environment variable.\nhttps://www.7-zip.org/\n");
+                exit(EXIT_FAILURE);
+            }
+            sprintf(extractcmd, "7z e -i!*.000 -so \"%s\"", options->infile);
+            FILE *pextract = popen(extractcmd, "r");
+            setmode(fileno(pextract), _O_BINARY);
+#endif
 
-            // Check if cabextract succeeded
-            int status = pclose(pcabextract);
-            verbose("cabextract exited with status %d\n", status);
+            // Read extracted output
+            read000filestream(pextract, &file_info);
+            // Check if extract process succeeded
+            int status = pclose(pextract);
+            verbose("extract process exited with status %d\n", status);
             if (status) {
-                fprintf(stderr, "Error: cabextract existed with status %d\n", status);
+                fprintf(stderr, "Error: extract process exited with status %d\n", status);
                 exit(EXIT_FAILURE);
             }
         } else if (filehasheader(options->infile, CE_CAB_000_HEADER_SIGNATURE)) {
@@ -598,10 +612,10 @@ int main(int argc, char **argv) {
         exit(EXIT_FAILURE);
     }
 
-    if (cabheader->FileLength != file_size) {
-        fprintf(stderr, "Error: 000 header file length (%d) and actual file length (%d) don't match\n", cabheader->FileLength, (uint32_t)file_size);
-        exit(EXIT_FAILURE);
-    }
+    // if (cabheader->FileLength != file_size) {
+    //     fprintf(stderr, "Error: 000 header file length (%d) and actual file length (%d) don't match\n", cabheader->FileLength, (uint32_t)file_size);
+    //     exit(EXIT_FAILURE);
+    // }
 
     verbose("AsciiSignature: %#08X\n", cabheader->AsciiSignature);
     verbose("Unknown1: %d\n", cabheader->Unknown1);
