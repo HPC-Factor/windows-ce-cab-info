@@ -10,19 +10,90 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
-#ifndef __MINGW32__
+
+#ifndef _WIN32
 #include <sys/mman.h>
 #else
 #include <fcntl.h>
 #include <io.h>
 #endif
 
+#define USE_ICONV
+
+#ifdef USE_ICONV
+#include <iconv.h>
+
 #include "WinCEArchitecture.h"
 #include "WinCECab000Header.h"
 #include "cjson/cJSON.h"
+#include "readbytes.h"
+
+/**
+ * @brief Convert CP932 encoded string to UTF-8
+ *
+ * @param in Shift-JIS encoded string
+ * @param utf8 buffer for UTF-8 string, needs to be at least 4x the size of in
+ * @return int number of encoded characters
+ */
+static int jap_to_utf8(char *in, char *utf8, size_t utf8_len) {
+    char *p;
+    int status;
+    iconv_t icv;
+    size_t src_len, dst_len;
+    icv = iconv_open("UTF-8", "CP932");
+    src_len = strlen(in);
+    dst_len = utf8_len;
+
+    status = iconv(icv, &in, &src_len, &utf8, &dst_len);
+    iconv_close(icv);
+    return status;
+}
+
+static int rus_to_utf8(char *in, char *utf8, size_t utf8_len) {
+    char *p;
+    int status;
+    iconv_t icv;
+    size_t src_len, dst_len;
+    icv = iconv_open("UTF-8", "CP1251");
+    src_len = strlen(in);
+    dst_len = utf8_len;
+
+    status = iconv(icv, &in, &src_len, &utf8, &dst_len);
+    iconv_close(icv);
+    return status;
+}
+
+const char *convert_string(const char *str) {
+    bool str_is_ascii = true;
+    for (uint8_t *ptr = (uint8_t *)str; *ptr; ptr++) {
+        if (*ptr < 0x20 || *ptr > 0x7F) {
+            // printf("String %s is not ASCII\n", str);
+            str_is_ascii = false;
+        }
+    }
+
+    if (str_is_ascii) return str;
+    char *newStr = calloc(1, strlen(str) * 4);
+    // printf("newStr: %08X\n", newStr);
+
+    int result = jap_to_utf8((char *)str, newStr, strlen(str) * 4);
+    // printf("jap_to_utf8 result %d\n", result);
+    if (result == -1) {
+        free(newStr);
+        newStr = calloc(1, strlen(str) * 4);
+        result = rus_to_utf8((char *)str, newStr, strlen(str) * 4);
+    }
+    if (result == -1) {
+        free(newStr);
+        return str;
+    }
+    return newStr;
+}
+#endif
 
 #define PROGRAM_NAME "wcecabinfo"
 #define PROGRAM_VERSION "0.9.0"
+#define CHUNK_SIZE 1024
 
 struct opts {
     /** Print output as JSON */
@@ -31,6 +102,8 @@ struct opts {
     bool printReg : 1;
     /** Print verbose information */
     bool verbose : 1;
+    /** Expect piped input */
+    bool piped : 1;
     /** Filter field */
     const char *filterField;
     /** Input file path */
@@ -42,7 +115,7 @@ typedef struct infile_struct {
     size_t size;
 } infile_struct;
 
-/** Pointer to the (possibily memory-mapped) file contents */
+/** Pointer to the (possibly memory-mapped) file contents */
 static void *file;
 /** CAB Header structure */
 static const CE_CAB_000_HEADER *cabheader;
@@ -66,6 +139,7 @@ void usage(int status) {
         "                           overrides --json option\n"
         "  -h, --help               print help\n"
         "  -v, --version            print version information\n"
+        "  -p, --piped              Expect piped input\n"
         "  -V, --verbose            print verbose logs\n"
         "\n"
         "Examples:\n"
@@ -102,6 +176,7 @@ static inline struct opts *get_opts(int argc, char **argv) {
                                            {"help", no_argument, NULL, 'h'},
                                            {"version", no_argument, NULL, 'v'},
                                            {"verbose", no_argument, NULL, 'V'},
+                                           {"piped", no_argument, NULL, 'p'},
                                            {"field", required_argument, NULL, 'f'},
                                            {NULL, 0, NULL, 0}};
     /** getopt_long stores the option index here. */
@@ -127,6 +202,9 @@ static inline struct opts *get_opts(int argc, char **argv) {
             case 'V':
                 options.verbose = true;
                 break;
+            case 'p':
+                options.piped = true;
+                break;
             default:
                 abort();
         }
@@ -145,97 +223,17 @@ static inline struct opts *get_opts(int argc, char **argv) {
     options.infile = "-";
 
     if (optind < argc) {
-        if (isatty(STDIN_FILENO)) {
-            options.infile = argv[optind++];
-        } else {
-            fprintf(stderr, "Input file argument provided while not in a TTY");
+        if (options.piped) {
+            fprintf(stderr, "Input file argument provided while piped flag is set");
             exit(EXIT_FAILURE);
+        } else {
+            options.infile = argv[optind++];
         }
-    } else if (isatty(STDIN_FILENO)) {
+    } else if (!options.piped) {
         usage(0);
     }
 
     return &options;
-}
-
-/**
- * @brief Check whether a string ends with the provided string
- *
- * @param input string to test
- * @param tail string to check for
- * @return int 1 if string ends with tail, 0 if not
- */
-int strendswith(const char *input, const char *tail) {
-    const size_t input_strlen = strlen(input);
-    const size_t tail_strlen = strlen(tail);
-    if (tail_strlen > input_strlen) {
-        return 0;
-    }
-    return strcmp(input + input_strlen - tail_strlen, tail) == 0;
-}
-
-#ifndef __MINGW32__
-/**
- * @brief Get the contents of the 000 file and return the pointer to it
- *
- * @param file_path
- * @return void*
- */
-int read000filecontents(const char *file_path, infile_struct *file_info) {
-    struct stat s;
-    int status;
-    const void *mapped;
-    int i;
-
-    /* try to open file */
-    int fd = open(file_path, O_RDONLY);
-    if (fd < 0) {
-        fprintf(stderr, "open %s failed: %s", file_path, strerror(errno));
-        exit(EXIT_FAILURE);
-    }
-
-    /* Get the size of the file. */
-    status = fstat(fd, &s);
-    if (status < 0) {
-        fprintf(stderr, "fstat %s failed: %s\n", file_path, strerror(errno));
-        exit(EXIT_FAILURE);
-    }
-
-    file_info->size = s.st_size;
-
-    /* Memory-map the file. */
-    mapped = mmap(0, file_info->size, PROT_READ, MAP_PRIVATE, fd, 0);
-    if (mapped == MAP_FAILED) {
-        fprintf(stderr, "mmap %s failed: %s\n", file_path, strerror(errno));
-        exit(EXIT_FAILURE);
-    }
-    close(fd);
-
-    file_info->file = mapped;
-    return 1;
-}
-#endif
-
-/**
- * @brief Checks if a file has a 32 bit header
- *
- * @param file_path File path
- * @return uint8_t 1 is the file is a cab file, 0 if not
- */
-uint8_t filehasheader(const char *file_path, const uint32_t header_signature) {
-    // fprintf(stdout, "Opening file '%s'.\n", file_path);
-    /* try to open file */
-    FILE *fp = fopen(file_path, "rb");
-
-    if (!fp) {
-        fprintf(stderr, "error: file open failed '%s'.\n", file_path);
-        exit(EXIT_FAILURE);
-    }
-
-    uint32_t c;
-    fread(&c, sizeof(c), 1, fp);
-    fclose(fp);
-    return c == header_signature;
 }
 
 static bool verbose_enabled = false;
@@ -258,7 +256,85 @@ static int verbose(const char *restrict format, ...) {
     return ret;
 }
 
-#define CHUNK_SIZE 128
+/**
+ * @brief Check whether a string ends with the provided string
+ *
+ * @param input string to test
+ * @param tail string to check for
+ * @return int 1 if string ends with tail, 0 if not
+ */
+int strendswith(const char *input, const char *tail) {
+    const size_t input_strlen = strlen(input);
+    const size_t tail_strlen = strlen(tail);
+    if (tail_strlen > input_strlen) {
+        return 0;
+    }
+    return strcmp(input + input_strlen - tail_strlen, tail) == 0;
+}
+
+#ifndef _WIN32
+/**
+ * @brief Get the contents of the 000 file and return the pointer to it
+ *
+ * @param file_path
+ * @return void*
+ */
+int read000filecontents(const char *file_path, infile_struct *file_info) {
+    struct stat s;
+    int status;
+    const void *mapped;
+    int i;
+
+    /* try to open file */
+    FILE *in_file = fopen(file_path, "r");
+    if (!in_file) {
+        fprintf(stderr, "open %s failed: %s", file_path, strerror(errno));
+        exit(EXIT_FAILURE);
+    }
+
+    /* Get the size of the file. */
+    if (fseek(in_file, 0, SEEK_END) == -1) {
+        fprintf(stderr, "fseek %s failed: %s\n", file_path, strerror(errno));
+        exit(EXIT_FAILURE);
+    }
+    file_info->size = ftell(in_file);
+
+    /* Memory-map the file. */
+    mapped = mmap(0, file_info->size, PROT_READ, MAP_PRIVATE, fileno(in_file), 0);
+    if (mapped == MAP_FAILED) {
+        fprintf(stderr, "mmap %s failed: %s\n", file_path, strerror(errno));
+        exit(EXIT_FAILURE);
+    }
+    fclose(in_file);
+
+    file_info->file = mapped;
+    return 1;
+}
+#endif
+
+/**
+ * @brief Checks if a file has a 32 bit header
+ *
+ * @param file_path File path
+ * @return uint8_t 1 is the file is a cab file, 0 if not
+ */
+uint8_t filehasheader(const char *file_path, const uint32_t header_signature) {
+    verbose("Checking file header for file '%s'.\n", file_path);
+    /* try to open file */
+    FILE *fp = fopen(file_path, "rb");
+
+    if (!fp) {
+        fprintf(stderr, "Error: file open of \"%s\" failed: %s\n", file_path, strerror(errno));
+        exit(EXIT_FAILURE);
+    }
+
+    uint32_t c;
+    fread(&c, sizeof(c), 1, fp);
+    fclose(fp);
+    return c == header_signature;
+}
+
+
 
 /**
  * @brief Read 000 file from an input stream
@@ -273,7 +349,7 @@ void read000filestream(FILE *stream, infile_struct *file_info) {
     size_t c = 0;
     size_t file_size = 0;
 
-    uint16_t chunks = 1;
+    int chunks = 1;
 
     while (c = fread(buffer + file_size, 1, CHUNK_SIZE, stream)) {
         char *old = buffer;
@@ -296,10 +372,17 @@ void read000filestream(FILE *stream, infile_struct *file_info) {
     file_info->file = buffer;
 }
 
+/**
+ * @brief Get array of strings created from the "unsupported" multistring
+ *
+ * @param usup Unsupported multistring
+ * @param len length of the unsupported multistring
+ * @return char* array of unsupported strings, with the last element being a nullpointer
+ */
 const char **get_unsupported(const char *usup, uint16_t len) {
     uint16_t numUnsupported = 1;
 
-    for (char *ptr = (char *)usup; ptr < (char *)(usup + len); ptr++) {
+    for (char *ptr = (char *)usup; ptr < (usup + len); ptr++) {
         if (*ptr == '\0') {
             numUnsupported++;
         }
@@ -309,7 +392,7 @@ const char **get_unsupported(const char *usup, uint16_t len) {
 
     uint16_t idx = 0;
     char prevValue = '\0';
-    for (char *ptr = (char *)usup; ptr < (char *)(usup + len); ptr++) {
+    for (char *ptr = (char *)usup; ptr < (usup + len); ptr++) {
         if (prevValue == '\0') {
             unsupported[idx++] = ptr;
         }
@@ -349,7 +432,7 @@ const char *get_hive(uint16_t hiveid) {
  * cab 000 file
  *
  * @param stringid String id to fetch
- * @return const char* pointer to the string, or 000 if string does not exist.
+ * @return const char* pointer to the string, or NULL if string does not exist.
  */
 const char *get_string(uint16_t stringid) {
     // verbose("getString(%d) = ", stringid);
@@ -358,7 +441,7 @@ const char *get_string(uint16_t stringid) {
     for (int i = 0; i < cabheader->NumEntriesString; i++) {
         if (stringentry->Id == stringid) {
             // verbose("\"%s\" (length: %d)\n", &(stringentry->String), stringentry->StringLength);
-
+            // TODO use memcpy
             return &(stringentry->String);
         }
         stringentry = ((void *)stringentry) + stringentry->StringLength + sizeof(uint16_t) + sizeof(uint16_t);
@@ -390,6 +473,12 @@ const char *parse_spec(uint16_t *spec, uint16_t speclength, char *delimiter) {
     return buf;
 }
 
+/**
+ * @brief Get the basedir string corresponding to the basedir id
+ *
+ * @param basedirid base dir id, a number between 0 and 17
+ * @return Basedir string, e.g. "%CE1%", or null if basedirid is out of range
+ */
 const char *get_basedir(uint16_t basedirid) {
     if (basedirid >= 0 && basedirid <= sizeof(BASE_DIRS)) {
         return BASE_DIRS[basedirid];
@@ -397,6 +486,12 @@ const char *get_basedir(uint16_t basedirid) {
     return NULL;
 }
 
+/**
+ * @brief Get the full directory path for a directory id
+ *
+ * @param directoryid directory id
+ * @return Full path or null if there is no corresponding directory entry
+ */
 const char *get_dir(uint16_t directoryid) {
     CE_CAB_000_DIRECTORY_ENTRY *direntry = (CE_CAB_000_DIRECTORY_ENTRY *)(file + cabheader->OffsetDirs);
     for (int i = 0; i < cabheader->NumEntriesDirs; i++) {
@@ -405,9 +500,15 @@ const char *get_dir(uint16_t directoryid) {
         }
         direntry = ((void *)direntry) + direntry->SpecLength + sizeof(uint16_t) + sizeof(uint16_t);
     }
-    return NULL;
+    return "unknown";
 }
 
+/**
+ * @brief Get the file name for a file id
+ *
+ * @param fileid file id
+ * @return File name or null if there is no corresponding file entry
+ */
 const char *get_file(uint16_t fileid) {
     CE_CAB_000_FILE_ENTRY *fileentry = (CE_CAB_000_FILE_ENTRY *)(file + cabheader->OffsetFiles);
     for (int i = 0; i < cabheader->NumEntriesFiles; i++) {
@@ -419,6 +520,12 @@ const char *get_file(uint16_t fileid) {
     return NULL;
 }
 
+/**
+ * @brief Get string representation of the architectore for an architecture id
+ *
+ * @param archid architecture id
+ * @return Descriptive string, such as "SH3"
+ */
 const char *get_architecture(uint32_t archid) {
     switch (archid) {
         case CE_CAB_000_ARCH_SH3:
@@ -466,6 +573,12 @@ const char *get_architecture(uint32_t archid) {
     }
 }
 
+/**
+ * @brief Get a string representation of a registry data type
+ *
+ * @param flags 32bit flags object
+ * @return corresponding registry data type
+ */
 const char *get_reg_datatype(uint32_t flags) {
     // printf("FLAGS: 0x%08x", flags);
     uint32_t masked = flags & 0x00010001;
@@ -481,75 +594,100 @@ const char *get_reg_datatype(uint32_t flags) {
     }
 }
 
-const char *concat_paths(const char *path1, const char *path2) {
+/**
+ * @brief Concat 2 strings with a \ in between
+ *
+ * @param path1 First path
+ * @param path2 Second path
+ * @return combined string of the 2 paths with a \ in between
+ */
+const char *join_paths(const char *path1, const char *path2) {
     uint16_t len = strlen(path1) + strlen(path2) + 2;
     char *out = malloc(len);
     sprintf(out, "%s\\%s", path1, path2);
     return out;
 }
 
+/**
+ * @brief Get the full path for a file
+ *
+ * @param fileid file id
+ * @return full path of the file or nullpointer if file can not be found
+ */
 const char *get_file_full_path(uint16_t fileid) {
     CE_CAB_000_FILE_ENTRY *fileentry = (CE_CAB_000_FILE_ENTRY *)(file + cabheader->OffsetFiles);
     for (int i = 0; i < cabheader->NumEntriesFiles; i++) {
         if (fileid == fileentry->Id) {
-            return concat_paths(get_dir(fileentry->DirectoryId), &(fileentry->FileName));
+            return join_paths(get_dir(fileentry->DirectoryId), &(fileentry->FileName));
         }
         fileentry = ((void *)fileentry) + fileentry->FileNameLength + sizeof(CE_CAB_000_FILE_ENTRY) - sizeof(uint16_t);
     }
+    return NULL;
 }
 
+/**
+ * @brief Get the registry path for hive id
+ *
+ * @param hiveid hive id
+ * @return full path of the registry hive or nullpointer if hive can not be found
+ */
 const char *get_reg_path(uint16_t hiveid) {
     CE_CAB_000_REGHIVE_ENTRY *reghiveentry = (CE_CAB_000_REGHIVE_ENTRY *)(file + cabheader->OffsetRegHives);
     for (int i = 0; i < cabheader->NumEntriesRegHives; i++) {
         uint16_t id = reghiveentry->Id;
-        if (id == hiveid) return concat_paths(get_hive(reghiveentry->HiveRoot), parse_spec(&(reghiveentry->Spec), reghiveentry->SpecLength, "\\"));
+        if (id == hiveid) return join_paths(get_hive(reghiveentry->HiveRoot), parse_spec(&(reghiveentry->Spec), reghiveentry->SpecLength, "\\"));
         reghiveentry = ((void *)reghiveentry) + reghiveentry->SpecLength + sizeof(CE_CAB_000_REGHIVE_ENTRY) - sizeof(uint16_t);
     }
     return NULL;
 }
 
 int main(int argc, char **argv) {
-    /** commandline options */
+    /** Commandline options */
     struct opts *options = get_opts(argc, argv);
     size_t file_size;
     infile_struct file_info;
     verbose_enabled = options->verbose;
 
-    if (isatty(STDIN_FILENO)) {
+    if (!options->piped) {
+        // File input it provided via argument
         const char *ext = strrchr(options->infile, '.');
         if (access(options->infile, R_OK) == -1) {
             fprintf(stderr, "Error: File can not be read or does not exist.");
             exit(EXIT_FAILURE);
         }
 
-        // Application is running in a TTY
         if (filehasheader(options->infile, CE_CAB_HEADER_SIGNATURE)) {
             verbose("File was identified as a CAB file by file signature\n");
+
+            // TODO use libmspack instead of cabextract/7-zip
             // Check file extension
+            // TODO Change to use tolower
             if (!strcasecmp(ext, "CAB")) {
                 fprintf(stderr, "Warning: File appears to be a CAB file, but does not have a .cab extension");
             }
             char *extractcmd = malloc(256 + strlen(options->infile));
 
-#ifndef __MINGW32__
-            // Linux
-            // check if cabextract is available
+#ifndef _WIN32
+            // Linux - use cabextract
+            // Check if cabextract is available
             if (system("which cabextract > /dev/null 2>&1")) {
                 fprintf(stderr, "cabextract not found. Please install this dependency.\nhttps://www.cabextract.org.uk/\n");
                 exit(EXIT_FAILURE);
             }
             // Use cabextract to extract the 000 file and read the pipe
-            sprintf(extractcmd, "cabextract --pipe --filter *.000 \"%s\"", options->infile);
+            sprintf(extractcmd, "cabextract --pipe --filter \"*.000\" \"%s\"", options->infile);
             FILE *pextract = popen(extractcmd, "r");
 
 #else
-            // Win32
+            // Win32 - use 7z
             if (system("7z > nul 2>&1")) {
                 fprintf(stderr, "7-zip not found. Please install this dependency and add\nthe directory containing 7z.exe to the PATH environment variable.\nhttps://www.7-zip.org/\n");
                 exit(EXIT_FAILURE);
             }
+            // Extract using 7-Zip with piping to stdout set
             sprintf(extractcmd, "7z e -i!*.000 -so \"%s\"", options->infile);
             FILE *pextract = popen(extractcmd, "r");
+            // Set file mode to binary, otherwise Windows might stop the stream when encountering linebreaks or end of transmission characters
             setmode(fileno(pextract), _O_BINARY);
 #endif
 
@@ -557,7 +695,7 @@ int main(int argc, char **argv) {
             read000filestream(pextract, &file_info);
             // Check if extract process succeeded
             int status = pclose(pextract);
-            verbose("extract process exited with status %d\n", status);
+            verbose("Extract process exited with status %d\n", status);
             if (status) {
                 fprintf(stderr, "Error: extract process exited with status %d\n", status);
                 exit(EXIT_FAILURE);
@@ -573,7 +711,7 @@ int main(int argc, char **argv) {
             }
 
 // Read file contents of the 000 file
-#ifndef __MINGW32__
+#ifndef _WIN32
             read000filecontents(options->infile, &file_info);
 #else
             read000filestream(fopen(options->infile, "r"), &file_info);
@@ -583,8 +721,7 @@ int main(int argc, char **argv) {
             exit(EXIT_FAILURE);
         }
     } else {
-        // Application is not running in a TTY, assume that the file is being
-        // piped in
+        // Piped input
 
         // CAB file
         // fprintf(stderr,("Piping in CAB files is supported at this time\n");
@@ -612,10 +749,10 @@ int main(int argc, char **argv) {
         exit(EXIT_FAILURE);
     }
 
-    // if (cabheader->FileLength != file_size) {
-    //     fprintf(stderr, "Error: 000 header file length (%d) and actual file length (%d) don't match\n", cabheader->FileLength, (uint32_t)file_size);
-    //     exit(EXIT_FAILURE);
-    // }
+    if (cabheader->FileLength != file_size) {
+        fprintf(stderr, "Error: 000 header file length (%d) and actual file length (%d) don't match\n", cabheader->FileLength, (uint32_t)file_size);
+        exit(EXIT_FAILURE);
+    }
 
     verbose("AsciiSignature: %#08X\n", cabheader->AsciiSignature);
     verbose("Unknown1: %d\n", cabheader->Unknown1);
@@ -650,8 +787,8 @@ int main(int argc, char **argv) {
     verbose("Unknown4: %d\n", cabheader->Unknown4);
     verbose("Unknown5: %d\n", cabheader->Unknown5);
 
-    const char *appName = (const char *)(file + cabheader->OffsetAppname);
-    const char *provider = (const char *)(file + cabheader->OffsetProvider);
+    const char *appName = convert_string((char *)(file + cabheader->OffsetAppname));
+    const char *provider = convert_string((char *)(file + cabheader->OffsetProvider));
     const char *architecture = get_architecture(cabheader->TargetArchitecture);
 
     const char *usup = (const char *)(file + cabheader->OffsetUnsupported);
@@ -665,17 +802,14 @@ int main(int argc, char **argv) {
         cJSON *cabJson = cJSON_CreateObject();
 
         /** App Name JSON Object */
-        cJSON *appNameJson = cJSON_CreateString(appName);
-        cJSON_AddItemToObject(cabJson, "appName", appNameJson);
+        cJSON_AddStringToObject(cabJson, "appName", appName);
 
         /** Provider JSON Object */
-        cJSON *providerJson = cJSON_CreateString(provider);
-        cJSON_AddItemToObject(cabJson, "provider", providerJson);
+        cJSON_AddStringToObject(cabJson, "provider", provider);
 
         /** Provider JSON Object */
         if (architecture) {
-            cJSON *architectureJson = cJSON_CreateString(architecture);
-            cJSON_AddItemToObject(cabJson, "architecture", architectureJson);
+            cJSON_AddStringToObject(cabJson, "architecture", architecture);
         } else {
             cJSON_AddItemToObject(cabJson, "architecture", cJSON_CreateNull());
         }
@@ -745,7 +879,7 @@ int main(int argc, char **argv) {
             cJSON_AddItemToObject(directoryItem, "id", directoryId);
 
             /** Directory Path */
-            cJSON *directoryPath = cJSON_CreateString(parse_spec(&(directoryentry->Spec), directoryentry->SpecLength, "\\"));
+            cJSON *directoryPath = cJSON_CreateString(convert_string(parse_spec(&(directoryentry->Spec), directoryentry->SpecLength, "\\")));
             cJSON_AddItemToObject(directoryItem, "path", directoryPath);
 
             directoryentry = ((void *)directoryentry) + directoryentry->SpecLength + sizeof(CE_CAB_000_DIRECTORY_ENTRY) - sizeof(uint16_t);
@@ -764,11 +898,11 @@ int main(int argc, char **argv) {
             cJSON_AddItemToObject(fileItem, "id", fileId);
 
             /** File Name */
-            cJSON *fileName = cJSON_CreateString(&(fileentry->FileName));
+            cJSON *fileName = cJSON_CreateString(convert_string(&(fileentry->FileName)));
             cJSON_AddItemToObject(fileItem, "name", fileName);
 
             /** File Directory */
-            cJSON *directory = cJSON_CreateString(get_dir(fileentry->DirectoryId));
+            cJSON *directory = cJSON_CreateString(convert_string(get_dir(fileentry->DirectoryId)));
             cJSON_AddItemToObject(fileItem, "directory", directory);
 
             // Flags
@@ -802,7 +936,7 @@ int main(int argc, char **argv) {
         }
         cJSON_AddItemToObject(cabJson, "files", filesJson);
 
-        /** RegistryEntries */
+        /** Registry Entries */
         cJSON *registryEntriesJson = cJSON_CreateArray();
         CE_CAB_000_REGKEY_ENTRY *regkeyentry = (CE_CAB_000_REGKEY_ENTRY *)(file + cabheader->OffsetRegKeys);
         for (int i = 0; i < cabheader->NumEntriesRegKeys; i++) {
@@ -818,11 +952,11 @@ int main(int argc, char **argv) {
             cJSON *regKeyItem = cJSON_CreateObject();
 
             /** Reg path */
-            cJSON *pathJson = cJSON_CreateString(path);
+            cJSON *pathJson = cJSON_CreateString(convert_string(path));
             cJSON_AddItemToObject(regKeyItem, "path", pathJson);
 
             /** Reg Item name. Null if default */
-            cJSON *nameJson = strlen(name) ? cJSON_CreateString(name) : cJSON_CreateNull();
+            cJSON *nameJson = strlen(name) ? cJSON_CreateString(convert_string(name)) : cJSON_CreateNull();
             cJSON_AddItemToObject(regKeyItem, "name", nameJson);
 
             /** Reg value data type */
@@ -830,15 +964,14 @@ int main(int argc, char **argv) {
             cJSON_AddItemToObject(regKeyItem, "dataType", dataTypeJson);
 
             /** Reg item data */
-            cJSON *valueJson;
             char *val;
             switch (regtype) {
                 case TYPE_REG_DWORD:
-                    val = (char *)malloc(16);
-                    sprintf(val, "dword:%08X", *((uint32_t *)value));
+                    val = malloc(16);
+                    sprintf(val, "dword:%08X", read_uint32_le(value));
                     break;
                 case TYPE_REG_SZ:
-                    val = (char *)value;
+                    val = (char *)convert_string(value);
                     break;
                 case TYPE_REG_MULTI_SZ:
                     val = malloc(8 + datalength * 3);
@@ -857,7 +990,7 @@ int main(int argc, char **argv) {
                     }
                     break;
             }
-            valueJson = cJSON_CreateString(val);
+            cJSON *valueJson = cJSON_CreateString(val);
             cJSON_AddItemToObject(regKeyItem, "value", valueJson);
 
             regkeyentry = ((void *)regkeyentry) + regkeyentry->DataLength + sizeof(CE_CAB_000_REGKEY_ENTRY) - sizeof(uint16_t);
@@ -880,22 +1013,15 @@ int main(int argc, char **argv) {
             // cJSON *linkId = cJSON_CreateNumber(linkentry->Id);
             // cJSON_AddItemToObject(linkItem, "linkId", linkId);
 
-            cJSON *isFile = cJSON_CreateBool(linkentry->LinkType);
-            cJSON_AddItemToObject(linkItem, "isFile", isFile);
+            cJSON_AddBoolToObject(linkItem, "isFile", linkentry->LinkType);
+            cJSON_AddNumberToObject(linkItem, "targetId", linkentry->TargetId);
+            cJSON_AddStringToObject(linkItem, "linkPath", convert_string(join_paths(basedir, linkspec)));
 
-            cJSON *targetId = cJSON_CreateNumber(linkentry->TargetId);
-            cJSON_AddItemToObject(linkItem, "targetId", targetId);
-
-            cJSON *linkPath = cJSON_CreateString(concat_paths(basedir, linkspec));
-            cJSON_AddItemToObject(linkItem, "linkPath", linkPath);
-
-            cJSON *targetPath;
             if (linkentry->LinkType) {
-                targetPath = cJSON_CreateString(get_file_full_path(linkentry->TargetId));
+                cJSON_AddStringToObject(linkItem, "targetPath",convert_string(get_file_full_path(linkentry->TargetId)));
             } else {
-                targetPath = cJSON_CreateString(get_dir(linkentry->TargetId));
+                cJSON_AddStringToObject(linkItem, "targetPath",convert_string(get_dir(linkentry->TargetId)));
             }
-            cJSON_AddItemToObject(linkItem, "targetPath", targetPath);
 
             linkentry = ((void *)linkentry) + linkentry->SpecLength + sizeof(CE_CAB_000_LINK_ENTRY) - sizeof(uint16_t);
 
@@ -996,7 +1122,7 @@ int main(int argc, char **argv) {
         }
     }
 
-#ifndef __MINGW32__
+#ifndef _WIN32
     // Unmap input file. Will do nothing if input file is not actually
     // memory mapped.
     munmap(file, file_size);

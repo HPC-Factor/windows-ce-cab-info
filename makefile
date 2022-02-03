@@ -1,5 +1,5 @@
-CC=gcc
-CFLAGS=-I. -fshort-wchar
+CC?=gcc
+CFLAGS=-I.
 DEPS=src/WinCePEHeader.h src/WinCECab000Header.h src/cjson/cJSON.h
 OUT_DIR=dist
 
@@ -19,4 +19,4 @@ install: clean wcecabinfo
 	install -m 655 dist/wcecabinfo $(DESTDIR)/bin/
 
 clean:
-	rm -f src/*.o src/cjson/*.o dist/wcecabinfo
+	rm -f src/*.o src/cjson/*.o dist/wcecabinfo dist/wcecabinfo.exe

@@ -67,11 +67,18 @@ This tool supports outputting the registry data in the Windows .reg format, use 
 
 ## Building
 
+### Building for UNIX and GNU/Linux
 ```bash
 make clean && make
 ```
 
-Installing
+### Building for Win32 with mingw64
+
+```bash
+make clean && make CC=x86_64-w64-mingw32-gcc
+```
+
+## Installing on UNIX and GNU/Linux
 
 ```bash
 make install
@@ -81,4 +88,6 @@ make install
 
 Thanks go to
  - Stuart Caie - for documenting the .000 format
- - C:Amie and Rich Hawley - For help and feedback
+ - C:Amie and Rich Hawley - for help and feedback
+ - Ørjan Malde - for help and feedback
+ - Aleksejs Popovs - For help with Cyrillic character decoding
