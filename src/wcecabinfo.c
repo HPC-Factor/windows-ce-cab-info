@@ -35,7 +35,7 @@
  * @param utf8 buffer for UTF-8 string, needs to be at least 4x the size of in
  * @return int number of encoded characters
  */
-static int jap_to_utf8(char *in, char *utf8, size_t utf8_len) {
+static int jap_to_utf8(const char *in, char *utf8, size_t utf8_len) {
     char *p;
     int status;
     iconv_t icv;
@@ -49,7 +49,7 @@ static int jap_to_utf8(char *in, char *utf8, size_t utf8_len) {
     return status;
 }
 
-static int rus_to_utf8(char *in, char *utf8, size_t utf8_len) {
+static int rus_to_utf8(const char *in, char *utf8, size_t utf8_len) {
     char *p;
     int status;
     iconv_t icv;
@@ -76,12 +76,12 @@ const char *convert_string(const char *str) {
     char *newStr = calloc(1, strlen(str) * 4);
     // printf("newStr: %08X\n", newStr);
 
-    int result = jap_to_utf8((char *)str, newStr, strlen(str) * 4);
+    int result = jap_to_utf8(str, newStr, strlen(str) * 4);
     // printf("jap_to_utf8 result %d\n", result);
     if (result == -1) {
         free(newStr);
         newStr = calloc(1, strlen(str) * 4);
-        result = rus_to_utf8((char *)str, newStr, strlen(str) * 4);
+        result = rus_to_utf8(str, newStr, strlen(str) * 4);
     }
     if (result == -1) {
         free(newStr);
@@ -92,7 +92,7 @@ const char *convert_string(const char *str) {
 #endif
 
 #define PROGRAM_NAME "wcecabinfo"
-#define PROGRAM_VERSION "0.9.0"
+#define PROGRAM_VERSION "0.9.1"
 #define CHUNK_SIZE 1024
 
 struct opts {
@@ -139,7 +139,9 @@ void usage(int status) {
         "                           overrides --json option\n"
         "  -h, --help               print help\n"
         "  -v, --version            print version information\n"
+#ifndef _WIN32
         "  -p, --piped              Expect piped input\n"
+#endif
         "  -V, --verbose            print verbose logs\n"
         "\n"
         "Examples:\n"
@@ -202,9 +204,11 @@ static inline struct opts *get_opts(int argc, char **argv) {
             case 'V':
                 options.verbose = true;
                 break;
+#ifndef _WIN32
             case 'p':
                 options.piped = true;
                 break;
+#endif
             default:
                 abort();
         }
@@ -333,8 +337,6 @@ uint8_t filehasheader(const char *file_path, const uint32_t header_signature) {
     fclose(fp);
     return c == header_signature;
 }
-
-
 
 /**
  * @brief Read 000 file from an input stream
@@ -1018,9 +1020,9 @@ int main(int argc, char **argv) {
             cJSON_AddStringToObject(linkItem, "linkPath", convert_string(join_paths(basedir, linkspec)));
 
             if (linkentry->LinkType) {
-                cJSON_AddStringToObject(linkItem, "targetPath",convert_string(get_file_full_path(linkentry->TargetId)));
+                cJSON_AddStringToObject(linkItem, "targetPath", convert_string(get_file_full_path(linkentry->TargetId)));
             } else {
-                cJSON_AddStringToObject(linkItem, "targetPath",convert_string(get_dir(linkentry->TargetId)));
+                cJSON_AddStringToObject(linkItem, "targetPath", convert_string(get_dir(linkentry->TargetId)));
             }
 
             linkentry = ((void *)linkentry) + linkentry->SpecLength + sizeof(CE_CAB_000_LINK_ENTRY) - sizeof(uint16_t);
